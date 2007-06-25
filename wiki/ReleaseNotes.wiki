@@ -14,4 +14,4 @@ The current version is 0.53.
     * changing images doesn't change window size except in actual-size mode
 
   Version 0.52
-    * fixed a bug with resizing
+    * fixed a bug with resizing
