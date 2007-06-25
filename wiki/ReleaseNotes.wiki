@@ -15,4 +15,3 @@ The current version is 0.53.
 
   Version 0.52 (2007-06-25)
     * fixed a bug with resizing
-
