@@ -17,13 +17,28 @@
 
 void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
+void o(char *str, ...)
+{
+#ifdef _DEBUG
+   char buffer[1024];
+   va_list va;
+   va_start(va,str);
+   vsprintf(buffer, str, va);
+   va_end(va);
+   OutputDebugString(buffer);
+#endif
+}
+
 #define FRAME   3
 #define FRAME2  (FRAME >> 1)
 
 #define GREY  192
 
 
-#define WM_APP_DECODED    WM_APP
+enum
+{
+   WM_APP_DECODED = WM_APP,
+};
 
 
 #if WINVER < 0x0500
@@ -88,10 +103,14 @@ enum
 
    LOAD_inactive, // filename slot, not loaded
 
+   // finished reading, needs decoding--originally decoder
+   // owned this, but then we couldn't free from the cache
+   LOAD_reading_done,
+
    // in any of the following states, the image is as done as it can be
-   LOAD_available, // loaded successfully
    LOAD_error_reading,
    LOAD_error_decoding,
+   LOAD_available, // loaded successfully
 
    // owned by resizer
    LOAD_resizing,
@@ -100,7 +119,6 @@ enum
    LOAD_reading,
 
    // owned by decoder
-   LOAD_reading_done,
    LOAD_decoding,
 };
 
@@ -120,7 +138,7 @@ typedef struct
 } ImageFile;
 
 stb_semaphore cache_mutex;
-stb_semaphore decode_queue;
+stb_semaphore decode_queue, decode_mutex;
 stb_semaphore disk_command_queue;
 
 typedef struct
@@ -146,9 +164,8 @@ void *diskload_task(void *p)
       DiskCommand dc;
 
       // wait for a command from the main thread
-OutputDebugString("READ: Waiting for disk request.\n");
+o("READ: Waiting for disk request.\n");
       stb_sem_waitfor(disk_command_queue);
-OutputDebugString("READ: Got disk request.\n");
 
       // grab the command; don't let the command or the cache change while we do it
       stb_sem_waitfor(cache_mutex);
@@ -159,12 +176,7 @@ OutputDebugString("READ: Got disk request.\n");
       }
       stb_sem_release(cache_mutex);
 
-{
-char buffer[256];
-sprintf(buffer, "%d\n", dc.num_files);
-OutputDebugString("READ: Iterating filelist\n");
-OutputDebugString(buffer);
-}
+o("READ: Got disk request, %d items.\n", dc.num_files);
       for (i=0; i < dc.num_files; ++i) {
          int n;
          uint8 *data;
@@ -172,84 +184,88 @@ OutputDebugString(buffer);
 
          // check if the main thread changed its mind about this
          if (dc.files[i]->bail) {
-OutputDebugString("READ: Bailing on disk request\n");
+o("READ: Bailing on disk request\n");
             dc.files[i]->status = LOAD_inactive;
          } else {
-OutputDebugString("READ: Loading file\n");
+o("READ: Loading file %s\n", dc.files[i]->filename);
             data = stb_file(dc.files[i]->filename, &n);
          
             // don't need to mutex these, because we own them via ->status
             if (data == NULL) {
                dc.files[i]->error = strdup("can't open");
                dc.files[i]->filedata = NULL;
+               dc.files[i]->len = 0;
                barrier();
                dc.files[i]->status = LOAD_error_reading;
             } else {
                dc.files[i]->error = NULL;
+               assert(dc.files[i]->filedata == NULL);
                dc.files[i]->filedata = data;
                dc.files[i]->len = n;
                barrier();
                dc.files[i]->status = LOAD_reading_done;
+
+               // now set the image decode command for what we just loaded
+               // wake the main thread? not needed, it has nothing to do
+               // wake(WM_APP_LOADED);
+               stb_sem_release(decode_queue);
             }
 
-
-OutputDebugString("READ: Putting in decode queue\n");
-            // now set the image decode command for what we just loaded
-            image_decode_pending = dc.files[i];
-            stb_sem_release(decode_queue);
-
-            // wake the main thread? not needed, it has nothing to do
-            // wake();
          }
       }
-OutputDebugString("READ: Finished command\n");
+o("READ: Finished command\n");
    }
 }
 
 #define MAX_CACHED_IMAGES  200
 volatile ImageFile cache[MAX_CACHED_IMAGES];
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image_n);
+volatile int decoder_idle = TRUE;
+
+volatile ImageFile *decoder_choose(void)
+{
+   int i, best_lru=0;
+   volatile ImageFile *best = NULL;
+start:
+
+   for (i=0; i < MAX_CACHED_IMAGES; ++i) {
+      if (cache[i].status == LOAD_reading_done) {
+         if (cache[i].lru > best_lru) {
+            best = &cache[i];
+            best_lru = best->lru;
+         }
+      }
+   }
+   if (best) {
+      int retry = FALSE;
+      stb_sem_waitfor(cache_mutex);
+      if (best->status == LOAD_reading_done)
+         best->status = LOAD_decoding;
+      else
+         retry = TRUE;
+      stb_sem_release(cache_mutex);
+      if (retry) goto start;
+   }
+   return best;
+}
 
 void *decode_task(void *p)
 {
    for(;;) {
-      int i;
       volatile ImageFile *f;
-      for (i=0; i < MAX_CACHED_IMAGES; ++i)
-         if (cache[i].status == LOAD_reading_done)
-            break;
-      if (i == MAX_CACHED_IMAGES) {
-OutputDebugString("DECODE: waiting for decode command\n");
-         do {
-            stb_sem_waitfor(decode_queue);
-            f = image_decode_pending;
-if (!f) OutputDebugString("DECODE: got bogus decode command\n");
-         } while (f == NULL);
-OutputDebugString("DECODE: got decode command\n");
-         assert(f->status == LOAD_reading_done);
-         // we might be signalled twice and miss an 'image_decode_pending' here,
-         // but later we'll catch it above
-      } else {
-OutputDebugString("DECODE: found loaded, unqueued file\n");
-         f = &cache[i];
-         if (image_decode_pending == f) {
-            image_decode_pending = NULL;
-OutputDebugString("DECODE: noticed it was in the queue so cleared the queue\n");
-         }
-      }
-      barrier();
-      assert(f->status == LOAD_reading_done);
-      assert(f->filedata);
-
-      if (f->bail) {
-         free(f->filedata);
-         f->filedata = NULL;
-         f->status = LOAD_inactive;
+      f = decoder_choose();
+      if (f == NULL) {
+o("DECODE: blocking\n");
+         stb_sem_waitfor(decode_queue);
+o("DECODE: woken\n");
       } else {
          int x,y,n;
          uint8 *data;
-         f->status = LOAD_decoding;
-         data = stbi_load_from_memory(f->filedata, f->len, &x, &y, &n, 4);
+         assert(f->status == LOAD_decoding);
+o("DECIDE: decoding %s\n", f->filename);
+         data = stbi_load_from_memory(f->filedata, f->len, &x, &y, &n, BPP);
+         decoder_idle = TRUE;
+o("DECODE: decoded %s\n", f->filename);
          free(f->filedata);
          f->filedata = NULL;
          if (data == NULL) {
@@ -492,7 +508,7 @@ void update_source(ImageFile *q)
    if (w == source->x+FRAME*2 && h == source->y+FRAME*2) {
       int j;
       unsigned char *p = z->pixels;
-      free(cur);
+      imfree(cur);
       cur = bmp_alloc(z->x + FRAME*2, z->y + FRAME*2);
       frame(cur);
       {
@@ -505,18 +521,10 @@ void update_source(ImageFile *q)
       MoveWindow(win, x,y,w,h, TRUE);
       InvalidateRect(win, NULL, FALSE);
    } else {
-      #if 1
       qs.x = x;
       qs.y = y;
       qs.w = w;
       qs.h = h;
-      #else
-      pending_resize.size.x = x;
-      pending_resize.size.y = y;
-      pending_resize.size.w = w;
-      pending_resize.size.h = h;
-      queue_resize(w,h, q, FALSE);
-      #endif
    }
 }
 
@@ -561,10 +569,78 @@ void init_filelist(void)
 }
 
 int lru_stamp=1;
+int max_cache_bytes = 256 * (1 << 20); // 256 MB; one 5MP image is 20MB
 
-void flush_cache(void)
+#define MIN_CACHE  3    // always keep 3 images cached, to allow prefetching
+
+int ImageFilePtrCompare(const void *p, const void *q)
 {
-   // @TODO
+   ImageFile *a = *(ImageFile **) p;
+   ImageFile *b = *(ImageFile **) q;
+   return (a->lru < b->lru) ? -1 : (a->lru > b->lru);   
+}
+
+void flush_cache(int locked)
+{
+   int limit;
+   volatile ImageFile *list[MAX_CACHED_IMAGES];
+   int i, total=0, occupied_slots=0, n=0;
+   for (i=0; i < MAX_CACHED_IMAGES; ++i) {
+      volatile ImageFile *z = &cache[i];
+      if (z->status != LOAD_unused)
+         ++occupied_slots;
+      if (MAIN_OWNS(z)) {
+         if (z->status == LOAD_available) {
+            total += z->image->stride * z->image->y;
+         } else if (z->status == LOAD_reading_done) {
+            total += z->len;
+         }
+         list[n++] = z;
+      }
+   }
+
+   limit = MAX_CACHED_IMAGES - MIN_CACHE;
+   if (total > max_cache_bytes || occupied_slots > limit) {
+      qsort((void *) list, n, sizeof(*list), ImageFilePtrCompare);
+      if (!locked) stb_sem_waitfor(cache_mutex);
+      for (i=0; i < n && occupied_slots > MIN_CACHE && (occupied_slots > limit || total > max_cache_bytes); ++i) {
+         ImageFile p;
+         /* @TODO: this is totally squirrely and probably buggy. we need to
+          * rethink how we can propose things to the disk loader and then
+          * later change our minds. is this mutex good enough?
+          */
+         {
+            p.status = list[i]->status;
+            if (MAIN_OWNS(&p) && p.status != LOAD_unused) {
+               p = *list[i];
+               list[i]->bail = 1; // force disk to bail if it gets this -- can't happen?
+               list[i]->filename = NULL;
+               list[i]->filedata = NULL;
+               list[i]->len = 0;
+               list[i]->image = NULL;
+               list[i]->error = NULL;
+               list[i]->status = LOAD_unused;
+            }
+         }
+         if (MAIN_OWNS(&p) && p.status != LOAD_unused) {
+            if (!locked) stb_sem_release(cache_mutex);
+o("MAIN: freeing cache: %s\n", p.filename);
+            stb_sdict_remove(file_cache, p.filename, NULL);
+            --occupied_slots; // occupied slots
+            if (p.status == LOAD_available)
+               total -= p.image->stride * p.image->y;
+            else if (p.status == LOAD_reading_done)
+               total -= p.len;
+            free(p.filename);
+            if (p.filedata) free(p.filedata);
+            if (p.image) imfree(p.image);
+            if (p.error) free(p.error);
+            if (!locked) stb_sem_waitfor(cache_mutex);
+         }
+      }
+      if (!locked) stb_sem_release(cache_mutex);
+o("Reduced to %d megabytes\n", total >> 20);
+   }
 }
 
 int wrap(int z)
@@ -600,14 +676,19 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
       }
       // it's a go, use z
    } else {
-      int i;
+      int i,tried_again=FALSE;
       // find a cache slot
+      try_again:
       for (i=0; i < MAX_CACHED_IMAGES; ++i)
          if (cache[i].status == LOAD_unused)
             break;
       if (i == MAX_CACHED_IMAGES) {
-         // @TODO: find lru
-         return;
+         if (tried_again) {
+            stb_fatal("Internal logic error: no free cache slots, but flush_cache() should free a few");
+         }  
+         tried_again = TRUE;
+         flush_cache(TRUE);
+         goto try_again;
       }
       z = &cache[i];
       free(z->filename);
@@ -862,7 +943,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          if (best) {
             update_source(best);
          }
-         flush_cache();
+         flush_cache(FALSE);
          break;
       }
 
@@ -1051,12 +1132,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    cache_mutex = stb_sem_new(1,0);
    disk_command_queue = stb_sem_new(1,1);
    decode_queue = stb_sem_new(1,1);
+   decode_mutex = stb_sem_new(1,0);
 
    image_data = stbi_load(argv[0], &image_x, &image_y, &image_n, BPP);
    if (image_data == NULL) {
       char *why = stbi_failure_reason();
       char buffer[512];
-      sprintf(buffer, "'%s': %s", lpCmdLine, why);
+      sprintf(buffer, "'%s': %s", argv[0], why);
       error(buffer);
       exit(0);
    }
@@ -1124,7 +1206,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             MoveWindow(win, qs.x,qs.y,qs.w,qs.h, TRUE);
             InvalidateRect(win, NULL, FALSE);
          } else {
-OutputDebugString("Enqueueing resize\n");
+o("Enqueueing resize\n");
             pending_resize.size = qs;
             queue_resize(qs.w, qs.h, source_c, FALSE);
          }
@@ -1138,7 +1220,7 @@ OutputDebugString("Enqueueing resize\n");
             if (!pending_resize.image) {
                Sleep(10);
             } else {
-OutputDebugString("Finished resize\n");
+o("Finished resize\n");
                imfree(cur);
                cur = pending_resize.image;
                SetWindowPos(hWnd,NULL,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, SWP_NOZORDER);
