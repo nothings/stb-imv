@@ -155,8 +155,8 @@ typedef struct
    int lru;
 } ImageFile;
 
-stb_semaphore cache_mutex;
-stb_semaphore decode_queue, decode_mutex;
+stb_mutex cache_mutex, decode_mutex;
+stb_semaphore decode_queue;
 stb_semaphore disk_command_queue;
 
 typedef struct
@@ -186,13 +186,13 @@ o("READ: Waiting for disk request.\n");
       stb_sem_waitfor(disk_command_queue);
 
       // grab the command; don't let the command or the cache change while we do it
-      stb_sem_waitfor(cache_mutex);
+      stb_mutex_begin(cache_mutex);
       {
          dc = dc_shared;
          for (i=0; i < dc.num_files; ++i)
             dc.files[i]->status = LOAD_reading;
       }
-      stb_sem_release(cache_mutex);
+      stb_mutex_end(cache_mutex);
 
 o("READ: Got disk request, %d items.\n", dc.num_files);
       for (i=0; i < dc.num_files; ++i) {
@@ -256,12 +256,12 @@ start:
    }
    if (best) {
       int retry = FALSE;
-      stb_sem_waitfor(cache_mutex);
+      stb_mutex_begin(cache_mutex);
       if (best->status == LOAD_reading_done)
          best->status = LOAD_decoding;
       else
          retry = TRUE;
-      stb_sem_release(cache_mutex);
+      stb_mutex_end(cache_mutex);
       if (retry) goto start;
    }
    return best;
@@ -620,7 +620,7 @@ void flush_cache(int locked)
    limit = MAX_CACHED_IMAGES - MIN_CACHE;
    if (total > max_cache_bytes || occupied_slots > limit) {
       qsort((void *) list, n, sizeof(*list), ImageFilePtrCompare);
-      if (!locked) stb_sem_waitfor(cache_mutex);
+      if (!locked) stb_mutex_begin(cache_mutex);
       for (i=0; i < n && occupied_slots > MIN_CACHE && (occupied_slots > limit || total > max_cache_bytes); ++i) {
          ImageFile p;
          /* @TODO: this is totally squirrely and probably buggy. we need to
@@ -641,7 +641,7 @@ void flush_cache(int locked)
             }
          }
          if (MAIN_OWNS(&p) && p.status != LOAD_unused) {
-            if (!locked) stb_sem_release(cache_mutex);
+            if (!locked) stb_mutex_end(cache_mutex);
 o("MAIN: freeing cache: %s\n", p.filename);
             stb_sdict_remove(file_cache, p.filename, NULL);
             --occupied_slots; // occupied slots
@@ -653,10 +653,10 @@ o("MAIN: freeing cache: %s\n", p.filename);
             if (p.filedata) free(p.filedata);
             if (p.image) imfree(p.image);
             if (p.error) free(p.error);
-            if (!locked) stb_sem_waitfor(cache_mutex);
+            if (!locked) stb_mutex_begin(cache_mutex);
          }
       }
-      if (!locked) stb_sem_release(cache_mutex);
+      if (!locked) stb_mutex_end(cache_mutex);
 o("Reduced to %d megabytes\n", total >> 20);
    }
 }
@@ -742,7 +742,7 @@ void advance(int dir)
    fileinfo[cur_loc].lru = ++lru_stamp;
 
    // need to grab the cache
-   stb_sem_waitfor(cache_mutex);
+   stb_mutex_begin(cache_mutex);
    dc.num_files = 0;
    queue_disk_command(&dc, cur_loc, 1);           // first thing to load: this file
    queue_disk_command(&dc, wrap(cur_loc+dir), 0); // second thing to load: the next file (preload)
@@ -752,7 +752,7 @@ void advance(int dir)
       dc_shared = dc;
       stb_sem_release(disk_command_queue);
    }
-   stb_sem_release(cache_mutex);
+   stb_mutex_end(cache_mutex);
    // tell loader not to bother with old data
    for (i=0; i < MAX_CACHED_IMAGES; ++i)
       if (cache[i].lru < lru_stamp-1)
@@ -1147,10 +1147,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    if (argc < 1) { MessageBox(NULL, "Specify an image file to view", "imv(stb)", MB_OK); exit(0); }
    
    resize_workers = stb_workq_new(resize_threads, resize_threads * 4);
-   cache_mutex = stb_sem_new(1,0);
+   cache_mutex = stb_mutex_new();
    disk_command_queue = stb_sem_new(1,1);
    decode_queue = stb_sem_new(1,1);
-   decode_mutex = stb_sem_new(1,0);
+   decode_mutex = stb_mutex_new();
 
    image_data = stbi_load(argv[0], &image_x, &image_y, &image_n, BPP);
    if (image_data == NULL) {
@@ -1173,6 +1173,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    cache[0].filename = strdup(filename);
    file_cache = stb_sdict_new(1);
    stb_sdict_add(file_cache, filename, (void *) &cache[0]);
+   source_c = (ImageFile *) &cache[0];
 
 
    {

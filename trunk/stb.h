@@ -1,4 +1,4 @@
-/* stb-1.88 -- Sean's Tool Box -- public domain -- http://nothings.org/stb.h
+/* stb-1.89 -- Sean's Tool Box -- public domain -- http://nothings.org/stb.h
           no warranty is offered or implied; use this code at your own risk
 
 This is a single header file with a bunch of useful utilities
@@ -118,6 +118,8 @@ Bug reports, feature requests, etc. can be mailed to 'sean' at the above site.
 
 3. Version History
 
+   1.89   support ';' in constant-string wildcards; stb_mutex wrapper (can implement
+          with EnterCriticalRegion eventually)
    1.88   portable threading API (only for win32 so far); worker thread queueing
    1.87   fix wildcard handling in stb_readdir_recursive
    1.86   support ';' in wildcards
@@ -10579,10 +10581,17 @@ void stb_compress_stream_end(int close)
 //                         Threads
 //
 
-typedef void *stb_thread;
+
 typedef void * (*stb_thread_func)(void *);
+
+// do not rely on these types, this is an implementation detail.
+// compare against STB_THREAD_NULL and ST_SEMAPHORE_NULL
+typedef void *stb_thread;
 typedef void *stb_semaphore;
+typedef void *stb_mutex;
 #define STB_SEMAPHORE_NULL    NULL
+#define STB_THREAD_NULL       NULL
+#define STB_MUTEX_NULL        NULL
 
 // get the number of processors (limited to those in the affinity mask for this process).
 STB_EXTERN int stb_processor_count(void);
@@ -10623,6 +10632,10 @@ STB_EXTERN void          stb_sem_delete (stb_semaphore s);
 STB_EXTERN void          stb_sem_waitfor(stb_semaphore s);
 STB_EXTERN void          stb_sem_release(stb_semaphore s);
 
+STB_EXTERN stb_mutex     stb_mutex_new(void);
+STB_EXTERN void          stb_mutex_delete(stb_mutex m);
+STB_EXTERN void          stb_mutex_begin(stb_mutex m);
+STB_EXTERN void          stb_mutex_end(stb_mutex m);
 
 #ifdef STB_DEFINE
 
@@ -10671,6 +10684,10 @@ static void stb__thread_run(void *t)
 static stb_thread stb_create_thread_raw(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
 {
 #ifdef _MT
+#if defined(STB_FASTMALLOC) && !defined(STB_FASTMALLOC_ITS_OKAY_I_ONLY_MALLOC_IN_ONE_THREAD)
+   stb_fatal("Error! Cannot use STB_FASTMALLOC with threads.\n");
+   return STB_THREAD_NULL;
+#else
    unsigned long id;
    stb__thread *data = (stb__thread *) malloc(sizeof(*data));
    if (!data) return NULL;
@@ -10683,6 +10700,7 @@ static stb_thread stb_create_thread_raw(stb_thread_func f, void *d, volatile voi
    id = _beginthread(stb__thread_run, 0, data);
    if (id == -1) return NULL;
    return (void *) id;
+#endif
 #else
    stb_fatal("Must compile mult-threaded to use stb_thread/stb_work.");
    return NULL;
@@ -10720,6 +10738,13 @@ stb_thread stb_create_thread(stb_thread_func f, void *d)
 {
    return stb_create_thread2(f,d,NULL,STB_SEMAPHORE_NULL);
 }
+
+// mutex implemented by wrapping semaphore
+stb_mutex stb_mutex_new(void)            { return stb_sem_new(1,0); }
+void      stb_mutex_delete(stb_mutex m)  { stb_sem_delete (m);      }
+void      stb_mutex_begin(stb_mutex m)   { stb_sem_waitfor(m);      }
+void      stb_mutex_end(stb_mutex m)     { stb_sem_release(m);      }
+
 
 static int stb__work_maxitems = 64;
 
