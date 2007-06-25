@@ -1,5 +1,11 @@
-*|  imv(stb)     windows image viewer. copyright 2007 Sean Barrett. GPL.  |*
+*|  imv(stb)     windows image viewer. copyright 2007 Sean Barrett. GPL 2.0.  |*
 
+This program comes with NO WARRANTY. See the GNU GPL for details.
+http://www.gnu.org/licenses/gpl.html
+
+SOURCE
+
+  http://code.google.com/p/stb-imv/
 
 INSTALLING
 
