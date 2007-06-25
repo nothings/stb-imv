@@ -87,9 +87,11 @@ enum
    LOAD_unused=0, // empty slot
 
    LOAD_inactive, // filename slot, not loaded
+
+   // in any of the following states, the image is as done as it can be
+   LOAD_available, // loaded successfully
    LOAD_error_reading,
    LOAD_error_decoding,
-   LOAD_available, // loaded successfully
 
    // owned by resizer
    LOAD_resizing,
