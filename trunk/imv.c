@@ -22,6 +22,7 @@
 
 #define WIN32_MEAN_AND_LEAN
 #define WIN32_EXTRA_LEAN
+#define _WIN32_WINNT 0x0400
 #include <windows.h>
 #include <stdio.h>
 #include <time.h>
@@ -35,16 +36,17 @@
 
 void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
+int do_debug;
 void o(char *str, ...)
 {
-#ifdef _DEBUG
-   char buffer[1024];
-   va_list va;
-   va_start(va,str);
-   vsprintf(buffer, str, va);
-   va_end(va);
-   OutputDebugString(buffer);
-#endif
+   if (do_debug) {
+      char buffer[1024];
+      va_list va;
+      va_start(va,str);
+      vsprintf(buffer, str, va);
+      va_end(va);
+      OutputDebugString(buffer);
+   }
 }
 
 #define FRAME   3
@@ -557,24 +559,27 @@ struct
 } *fileinfo;
 stb_sdict *file_cache;
 
+void free_fileinfo(void)
+{
+   int i;
+   for (i=0; i < stb_arr_len(fileinfo); ++i)
+      free(fileinfo[i].filename);
+   stb_arr_free(fileinfo);
+   fileinfo = NULL;
+}
+
 void init_filelist(void)
 {
    char *s = NULL;
    int i;
    if (fileinfo) {
       filename = s = strdup(fileinfo[cur_loc].filename);
-      for (i=0; i < stb_arr_len(fileinfo); ++i) {
-         free(fileinfo[i].filename);
-      }
-      stb_arr_free(fileinfo);
+      free_fileinfo();
    }
 
    image_files = stb_readdir_files_mask(path_to_file, "*.jpg;*.jpeg;*.png;*.bmp");
    if (image_files == NULL) error("Error: couldn't read directory.");
 
-   stb_fixpath(filename);
-   stb_create_thread(diskload_task, NULL);
-   stb_create_thread(decode_task, NULL);
    cur_loc = 0;
    stb_arr_setlen(fileinfo, stb_arr_len(image_files));
    for (i=0; i < stb_arr_len(image_files); ++i) {
@@ -585,6 +590,7 @@ void init_filelist(void)
    }
    if (s) free(s);
 }
+
 
 int lru_stamp=1;
 int max_cache_bytes = 256 * (1 << 20); // 256 MB; one 5MP image is 20MB
@@ -745,8 +751,10 @@ void advance(int dir)
    stb_mutex_begin(cache_mutex);
    dc.num_files = 0;
    queue_disk_command(&dc, cur_loc, 1);           // first thing to load: this file
-   queue_disk_command(&dc, wrap(cur_loc+dir), 0); // second thing to load: the next file (preload)
-   queue_disk_command(&dc, wrap(cur_loc-dir), 0); // last thing to load: the previous file (in case it got skipped when they went fast)
+   if (dir) {
+      queue_disk_command(&dc, wrap(cur_loc+dir), 0); // second thing to load: the next file (preload)
+      queue_disk_command(&dc, wrap(cur_loc-dir), 0); // last thing to load: the previous file (in case it got skipped when they went fast)
+   }
 
    if (dc.num_files) {
       dc_shared = dc;
@@ -757,6 +765,25 @@ void advance(int dir)
    for (i=0; i < MAX_CACHED_IMAGES; ++i)
       if (cache[i].lru < lru_stamp-1)
          cache[i].bail = 1;
+}
+
+static char filenamebuffer[4096];
+void open_file(void)
+{
+   OPENFILENAME o;
+   memset(&o, 0, sizeof(o));
+   o.lStructSize = sizeof(o);
+   o.lpstrFilter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp\0";
+   o.lpstrFile = filenamebuffer;
+   filenamebuffer[0] = 0;
+   o.nMaxFile = sizeof(filenamebuffer);
+   if (!GetOpenFileName(&o))
+      return;
+   filename = filenamebuffer;
+   stb_fixpath(filename);
+   stb_splitpath(path_to_file, filename, STB_PATH);
+   init_filelist();
+   advance(0);
 }
 
 
@@ -1041,6 +1068,10 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                resize(-1);
                break;
 
+            case MY_CTRL | 'O':
+               open_file();
+               break;
+
             case MY_ALT | '\r':
                // alt-enter
                break;
@@ -1105,6 +1136,7 @@ void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+   char filenamebuffer[4096];
    int argc;
    char **argv = stb_tokens_quoted(lpCmdLine, " ", &argc);
    MEMORYSTATUS mem;
@@ -1118,6 +1150,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    int image_n;
 
    resize_threads = stb_processor_count();
+   do_debug = IsDebuggerPresent();
 
    hInst = hInstance;
    GlobalMemoryStatus(&mem);
@@ -1144,7 +1177,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    if (!RegisterClassEx(&wndclass))
       return FALSE;
 
-   if (argc < 1) { MessageBox(NULL, "Specify an image file to view", "imv(stb)", MB_OK); exit(0); }
+   if (argc < 1) {
+      OPENFILENAME o;
+      memset(&o, 0, sizeof(o));
+      o.lStructSize = sizeof(o);
+      o.lpstrFilter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp\0";
+      o.lpstrFile = filenamebuffer;
+      filenamebuffer[0] = 0;
+      o.nMaxFile = sizeof(filenamebuffer);
+      if (!GetOpenFileName(&o))
+         return 0;
+      filename = filenamebuffer;
+   } else {
+      filename = argv[0];
+   }
    
    resize_workers = stb_workq_new(resize_threads, resize_threads * 4);
    cache_mutex = stb_mutex_new();
@@ -1152,17 +1198,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    decode_queue = stb_sem_new(1,1);
    decode_mutex = stb_mutex_new();
 
-   image_data = stbi_load(argv[0], &image_x, &image_y, &image_n, BPP);
+   image_data = stbi_load(filename, &image_x, &image_y, &image_n, BPP);
    if (image_data == NULL) {
       char *why = stbi_failure_reason();
       char buffer[512];
-      sprintf(buffer, "'%s': %s", argv[0], why);
+      sprintf(buffer, "'%s': %s", filename, why);
       error(buffer);
       exit(0);
    }
-   stb_fixpath(argv[0]);
-   stb_splitpath(path_to_file, argv[0], STB_PATH);
-   filename = argv[0];
+   stb_fixpath(filename);
+   stb_splitpath(path_to_file, filename, STB_PATH);
+   stb_create_thread(diskload_task, NULL);
+   stb_create_thread(decode_task, NULL);
 
    source = malloc(sizeof(*source));
    make_image(source, image_x, image_y, image_data, image_n);

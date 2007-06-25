@@ -1,0 +1,10 @@
+RELEASE NOTES
+
+
+Version 0.53
+  - added Open File dialog if you run without a commandline
+  - ctrl-O lets you open an arbitrary file
+
+
+Version 0.52
+  - fixed a bug with resizing
