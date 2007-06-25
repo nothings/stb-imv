@@ -1,13 +1,17 @@
-#summary One-sentence summary of this page.
+#summary Release notes for all versions
 
-= Introduction =
+= Release =
 
-Add your content here.
+The current version is 0.53.
 
 
-= Details =
+= Release Notes =
 
-Add your content here.  Format your content with:
-  * Text in *bold* or _italic_
-  * Headings, paragraphs, and lists
-  * Automatic links to other wiki pages
+  Version 0.53 (2007-06-25)
+    - added Open File dialog if you run without a commandline
+    - ctrl-O lets you open an arbitrary file
+    - double-click, alt-enter to toggle actual-size vs. fullscreen
+    - changing images doesn't change window size except in actual-size mode
+
+  Version 0.52 (2007-06-25)
+    - fixed a bug with resizing
