@@ -32,6 +32,8 @@
 #include "stb_image.c"    /*     http://nothings.org/stb_image.c   */
 
 
+#define VERSION  "0.53"
+
 void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
 #ifdef _DEBUG
@@ -84,8 +86,9 @@ char *displayName = "imv(stb)";
 
 #define BPP 4
 
-void platformDrawBitmap(HDC hdc, int x, int y, unsigned char *bits, int w, int h, int stride)
+void platformDrawBitmap(HDC hdc, int x, int y, unsigned char *bits, int w, int h, int stride, int dim)
 {
+   int i;
    BITMAPINFOHEADER b;
    int result;
 
@@ -95,14 +98,19 @@ void platformDrawBitmap(HDC hdc, int x, int y, unsigned char *bits, int w, int h
    b.biBitCount=BPP*8;
    b.biWidth = stride/BPP;
    b.biHeight = -h;  // tell windows the bitmap is stored top-to-bottom
-   if (IsBadReadPtr(bits, w*h*BPP)) {
-      assert(0);
-   }
+   if (dim)
+      for (i=0; i < stride*h; i += 4)
+         *(uint32 *)(bits+i) = (*(uint32 *)(bits+i) >> 1) & 0x7f7f7f7f;
    result = SetDIBitsToDevice(hdc, x,y, w,abs(h), 0,0, 0,abs(h), bits, (BITMAPINFO *) &b, DIB_RGB_COLORS);
    if (result == 0) {
       DWORD e = GetLastError();
    }
+   if (dim)
+      for (i=0; i < stride*h; i += 4)
+         *(uint32 *)(bits+i) = (*(uint32 *)(bits+i) << 1);
 }
+
+
 
 void barrier(void)
 {
@@ -399,6 +407,52 @@ static void image_resize(Image *dest, Image *src, ImageFile *cache);
 
 Image *cur;
 char *cur_filename;
+int show_help=0;
+
+char helptext_center[] =
+   "imv(stb) version " VERSION
+;
+
+char helptext_left[] =
+   "\n\n"
+   "ESC: exit\n"
+   "ALT-ENTER: toggle size\n"
+   "CTRL-PLUS: zoom in\n"
+   "CTRL-MINUS: zoom out\n"
+   "LEFT, SPACE: next image\n"
+   "RIGHT, BACKSPACE: previous image\n"
+   "CTRL-O: open image\n"
+   "F1, H: help"
+;
+
+char helptext_right[] =
+   "\n\n"
+   "right-click to exit\n"
+   "left drag center to move\n"
+   "left drag edges to resize\n"
+   "double-click to toggle size\n"
+   "\n"
+;
+
+void draw_nice(HDC hdc, char *text, RECT *rect, uint flags)
+{
+#if 1
+   int i,j;
+   SetTextColor(hdc, RGB(80,80,80));
+   //for (i=-1; i <= 1; i += 1)
+   //for (j=-1; j <= 1; j += 1)
+   for (i=2; i >= 1; i -= 1)
+   for (j=2; j >= 1; j -= 1)
+   {
+      RECT r = { rect->left+i, rect->top+j, rect->right+i, rect->bottom + j };
+      if (i == 1 && j == 1)
+         SetTextColor(hdc, RGB(0,0,0));
+      DrawText(hdc, text, -1, &r, flags);
+   }
+#endif
+   SetTextColor(hdc, RGB(255,255,255));
+   DrawText(hdc, text, -1, rect, flags);
+}
 
 void display(HWND win, HDC hdc)
 {
@@ -408,9 +462,10 @@ void display(HWND win, HDC hdc)
    GetClientRect(win, &rect);
    w = rect.right - rect.left;
    h = rect.bottom - rect.top;
+
    x = (w - cur->x) >> 1;
    y = (h - cur->y) >> 1;
-   platformDrawBitmap(hdc, x,y,cur->pixels, cur->x, cur->y, cur->stride);
+   platformDrawBitmap(hdc, x,y,cur->pixels, cur->x, cur->y, cur->stride, show_help);
    // draw in the borders
    r2 = rect;
    r2.right = x;           FillRect(hdc, &r2, b); r2=rect;
@@ -421,6 +476,23 @@ void display(HWND win, HDC hdc)
    r2.left = x;
    r2.right = x+cur->x;
    r2.top  = y + cur->y;   FillRect(hdc, &r2, b);
+
+   if (show_help) {
+      int h2;
+      RECT box = rect;
+      DrawText(hdc, helptext_left, -1, &box, DT_CALCRECT);
+      h2 = box.bottom - box.top;
+      box = rect;
+      box.left -= 200; box.right += 200;
+      SetBkMode(hdc, TRANSPARENT);
+      box.top = stb_max((h - h2) >> 1, 0);
+      box.bottom = box.top + h2;
+      draw_nice(hdc, helptext_center, &box, DT_CENTER);
+      box.left -= 120; box.right -= 120;
+      draw_nice(hdc, helptext_left, &box, DT_CENTER);
+      box.left += 240; box.right += 240;
+      draw_nice(hdc, helptext_right, &box, DT_CENTER);
+   }
 }
 
 typedef struct
@@ -1022,6 +1094,9 @@ void mouse(UINT ev, int x, int y)
 #define VK_OEM_PLUS  0xbb
 #define VK_OEM_MINUS 0xbd
 #endif
+#ifndef VK_SLASH
+#define VK_SLASH     0xbf
+#endif
 
 int best_lru = 0;
 
@@ -1121,6 +1196,15 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             case VK_LEFT:
             case VK_NUMPAD4:
                advance(-1);
+               break;
+
+            case VK_F1:
+            case 'H':
+            case 'H' | MY_SHIFT:
+            case VK_SLASH:
+            case VK_SLASH | MY_SHIFT:
+               show_help = !show_help;
+               InvalidateRect(win, NULL, FALSE);
                break;
 
             case MY_CTRL | VK_OEM_PLUS:

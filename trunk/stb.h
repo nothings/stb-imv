@@ -10966,7 +10966,7 @@ void stb_work_numthreads(int n)
 //
 //                         Fast malloc implementation
 //
-//   This is a clone of TCMalloc, but without the thread stuff.
+//   This is a clone of TCMalloc, but without the thread support.
 //      1. large objects are allocated directly, page-aligned
 //      2. small objects are allocated in homogeonous heaps, 0 overhead
 //
