@@ -94,6 +94,10 @@ SOURCE=..\imv.c
 # End Source File
 # Begin Source File
 
+SOURCE=..\notes.txt
+# End Source File
+# Begin Source File
+
 SOURCE=..\stb.h
 # End Source File
 # End Target
