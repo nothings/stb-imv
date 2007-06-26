@@ -1,5 +1,6 @@
   Version 0.54 ()
     * resizing with ctrl- and ctrl+ correctly sets the actual-size-mode
+    * integrated help with F1/h/?
 
   Version 0.53 (2007-06-25)
     * added Open File dialog if you run without a commandline
