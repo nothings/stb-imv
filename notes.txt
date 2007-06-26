@@ -1,12 +1,18 @@
-  Version 0.54 ()
-    * resizing with ctrl- and ctrl+ correctly sets the actual-size-mode
-    * integrated help with F1/h/?
+  Version 0.55 [todo]
+    * bugfix: display error message for files that don't load
+
+  Version 0.54 (2007-06-26)
+    * bugfix: keep current window position while switching windows in actual-size mode
+    * feature: mousewheel to resize
+    * feature: checkerboard border behind alpha - but image sized, not zoom-independent
+    * feature: integrated help with F1/h/?
+    * bugfix: resizing with ctrl- and ctrl+ correctly sets the actual-size-mode
 
   Version 0.53 (2007-06-25)
-    * added Open File dialog if you run without a commandline
-    * ctrl-O lets you open an arbitrary file
-    * double-click, alt-enter to toggle actual-size vs. fullscreen
-    * changing images doesn't change window size except in actual-size mode
+    * feature: double-click, alt-enter to toggle actual-size vs. fullscreen
+    * feature: ctrl-O lets you open an arbitrary file
+    * feature: added Open File dialog if you run without a commandline
+    * bugfix: changing images doesn't change window size except in actual-size mode
 
   Version 0.52 (2007-06-25)
-    * fixed a bug with resizing
+    * bugfix: hang when resizing first image
