@@ -1,10 +1,11 @@
-RELEASE NOTES
+  Version 0.54 ()
+    * resizing with ctrl- and ctrl+ correctly sets the actual-size-mode
 
+  Version 0.53 (2007-06-25)
+    * added Open File dialog if you run without a commandline
+    * ctrl-O lets you open an arbitrary file
+    * double-click, alt-enter to toggle actual-size vs. fullscreen
+    * changing images doesn't change window size except in actual-size mode
 
-Version 0.53
-  - added Open File dialog if you run without a commandline
-  - ctrl-O lets you open an arbitrary file
-
-
-Version 0.52
-  - fixed a bug with resizing
+  Version 0.52 (2007-06-25)
+    * fixed a bug with resizing
