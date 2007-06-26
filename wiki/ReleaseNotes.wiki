@@ -2,7 +2,11 @@
 
 = Release =
 
-The current version is 0.53.
+This is an alpha version, targetting the eventual milestones:
+
+  version 0.90 - beta
+
+  version 1.00 - stable release
 
 
 = Release Notes =
@@ -22,3 +26,5 @@ The current version is 0.53.
 
   Version 0.52 (2007-06-25)
     * bugfix: hang when resizing first image
+
+
