@@ -32,7 +32,11 @@
 #include "stb_image.c"    /*     http://nothings.org/stb_image.c   */
 
 
-#define VERSION  "0.53"
+// all programs get the version number from the same place: version.bat
+#define set   static char *
+#include "version.bat"
+;
+#undef set
 
 void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
@@ -64,6 +68,8 @@ void ods(char *str, ...)
 enum
 {
    WM_APP_DECODED = WM_APP,
+   WM_APP_LOAD_ERROR,
+   WM_APP_DECODE_ERROR,
 };
 
 
@@ -233,6 +239,7 @@ o(("READ: Loading file %s\n", dc.files[i]->filename));
                dc.files[i]->len = 0;
                barrier();
                dc.files[i]->status = LOAD_error_reading;
+               wake(WM_APP_LOAD_ERROR);
             } else {
                dc.files[i]->error = NULL;
                assert(dc.files[i]->filedata == NULL);
@@ -308,6 +315,7 @@ o(("DECODE: decoded %s\n", f->filename));
             f->error = strdup(stbi_failure_reason());
             barrier();
             f->status = LOAD_error_reading;
+            wake(WM_APP_DECODE_ERROR);
          } else {
             f->image = (Image *) malloc(sizeof(*f->image));
             make_image(f->image, x,y,data,n);
@@ -340,7 +348,7 @@ Image *bmp_alloc(int x, int y)
 
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image_n)
 {
-   int i;
+   int i,j,k=0;
    z->pixels = image_data;
    z->x = image_x;
    z->y = image_y;
@@ -348,20 +356,29 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image
    z->frame = 0;
 
    // swap RGB to BGR
-   for (i=0; i < image_x*image_y*BPP; i += BPP) {
-      unsigned char t = image_data[i+0];
-      image_data[i+0] = image_data[i+2];
-      image_data[i+2] = t;
-      #if BPP==4
-      if (image_n == 4) {
-         // apply alpha
-         unsigned char *p = image_data+i;
-         int a = (255-p[3]);
-         p[0] += (((200 - (int) p[0])*a)>>8);
-         p[1] += (((100 - (int) p[1])*a)>>8);
-         p[2] += (((200 - (int) p[2])*a)>>8);
+   for (j=0; j < image_y; ++j) {
+      for (i=0; i < image_x; ++i) {
+         unsigned char t = image_data[k+0];
+         image_data[k+0] = image_data[k+2];
+         image_data[k+2] = t;
+         #if BPP==4
+         if (image_n == 4) {
+            // apply alpha
+            unsigned char *p = image_data+k;
+            int a = (255-p[3]);
+            if ((i ^ j) & 8) {
+               p[0] += (((200 - (int) p[0])*a)>>8);
+               p[1] += ((( 40 - (int) p[1])*a)>>8);
+               p[2] += (((200 - (int) p[2])*a)>>8);
+            } else {
+               p[0] += (((150 - (int) p[0])*a)>>8);
+               p[1] += ((( 30 - (int) p[1])*a)>>8);
+               p[2] += (((150 - (int) p[2])*a)>>8);
+            }
+         }
+         #endif
+         k += BPP;
       }
-      #endif
    }
 }
 
@@ -389,8 +406,10 @@ void frame(Image *z)
 
 void imfree(Image *x)
 {
-   free(x->pixels);
-   free(x);
+   if (x) {
+      free(x->pixels);
+      free(x);
+   }
 }
 
 Image image_region(Image *p, int x, int y, int w, int h)
@@ -409,8 +428,8 @@ Image *cur;
 char *cur_filename;
 int show_help=0;
 
-char helptext_center[] =
-   "imv(stb) version " VERSION
+char helptext_center[128] =
+   "imv(stb) version "
 ;
 
 char helptext_left[] =
@@ -454,6 +473,19 @@ void draw_nice(HDC hdc, char *text, RECT *rect, uint flags)
    DrawText(hdc, text, -1, rect, flags);
 }
 
+char display_error[1024];
+void set_error(volatile ImageFile *z)
+{
+   sprintf(display_error, "File:\n%s\nError:\n%s\n", z->filename, z->error);
+   InvalidateRect(win, NULL, FALSE);
+   imfree(cur);
+   cur = NULL;
+   free(cur_filename);
+   cur_filename = strdup(z->filename);
+   source_c = (ImageFile *) z;
+   source = NULL;
+}
+
 void display(HWND win, HDC hdc)
 {
    RECT rect,r2;
@@ -462,6 +494,14 @@ void display(HWND win, HDC hdc)
    GetClientRect(win, &rect);
    w = rect.right - rect.left;
    h = rect.bottom - rect.top;
+   SetBkMode(hdc, TRANSPARENT);
+
+   if (display_error[0]) {
+      FillRect(hdc, &rect, b);
+      if (rect.bottom > rect.top + 100) rect.top += 50;
+      draw_nice(hdc, display_error, &rect, DT_CENTER);
+      return;
+   }
 
    x = (w - cur->x) >> 1;
    y = (h - cur->y) >> 1;
@@ -484,7 +524,6 @@ void display(HWND win, HDC hdc)
       h2 = box.bottom - box.top;
       box = rect;
       box.left -= 200; box.right += 200;
-      SetBkMode(hdc, TRANSPARENT);
       box.top = stb_max((h - h2) >> 1, 0);
       box.bottom = box.top + h2;
       draw_nice(hdc, helptext_center, &box, DT_CENTER);
@@ -549,6 +588,7 @@ void queue_resize(int w, int h, ImageFile *src_c, int immediate)
    int w2,h2;
 
    if (!immediate) assert(pending_resize.size.w);
+   if (src_c == NULL) return;
 
    // create (w2,h2) matching aspect ratio of w/h
    w -= FRAME*2;
@@ -582,7 +622,7 @@ void queue_resize(int w, int h, ImageFile *src_c, int immediate)
 
 void enqueue_resize(int left, int top, int width, int height)
 {
-   if ((width == cur->x && height >= cur->y) || (height == cur->y && width >= cur->x)) {
+   if (cur && ((width == cur->x && height >= cur->y) || (height == cur->y && width >= cur->x))) {
       // no resize necessary, just a variant of the current shape
       MoveWindow(win, left, top, width, height, TRUE);
       InvalidateRect(win, NULL, FALSE);
@@ -614,9 +654,21 @@ void size_to_current(int maximize)
 
    w2 = source->x+FRAME*2, h2 = source->y+FRAME*2;
    switch (display_mode) {
-      case DISPLAY_actual:
+      case DISPLAY_actual: {
+         int cx,cy;
+         RECT rect;
          ideal_window_size(w2,h2, &w,&h, &x,&y);
+         cx = GetSystemMetrics(SM_CXSCREEN);
+         cy = GetSystemMetrics(SM_CYSCREEN);
+         if (w <= cx && h <= cy) {
+            GetWindowRect(win, &rect);
+            x = (rect.right + rect.left - w) >> 1;
+            y = (rect.top + rect.bottom - h) >> 1;
+            x = stb_clamp(x,0,cx-w);
+            y = stb_clamp(y,0,cy-h);
+         }
          break;
+      }
       case DISPLAY_current:
          if (maximize) {
             x = y = -FRAME;
@@ -639,6 +691,7 @@ void size_to_current(int maximize)
       imfree(cur);
       free(cur_filename);
       cur = bmp_alloc(z->x + FRAME*2, z->y + FRAME*2);
+      display_error[0] = 0;
       cur_filename = strdup(source_c->filename);
       frame(cur);
       {
@@ -665,13 +718,16 @@ void update_source(ImageFile *q)
    source = z;
    source_c = q;
 
-   size_to_current(FALSE);
+   if (z)
+      size_to_current(FALSE);
 }
 
 void toggle_display(void)
 {
-   display_mode = (display_mode + 1) % DISPLAY__num;
-   size_to_current(TRUE);
+   if (source) {
+      display_mode = (display_mode + 1) % DISPLAY__num;
+      size_to_current(TRUE);
+   }
 }
 
 char path_to_file[4096], *filename;
@@ -821,7 +877,9 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
          return;
       }
       if (z->status != LOAD_inactive) {
-         // there was an error loading it... @todo, display the error
+         if (make_current) {
+            set_error(z);
+         }
          return;
       }
       // it's a go, use z
@@ -923,34 +981,47 @@ void resize(int step)
    float s;
    int x2,y2;
    int zoom=0;
-   if (cur->x > source->x + FRAME*2 || cur->y > source->y + FRAME*2) {
-      for(;;) {
-         s = (float) pow(2, zoom/2.0f + 0.25f);
-         x2 = int(x*s);
-         y2 = int(y*s);
-         if (cur->x < x2 + FRAME*2 || cur->y < y2 + FRAME*2)
-            break;
-         ++zoom;
+
+   if (cur) {
+      if (cur->x > source->x + FRAME*2 || cur->y > source->y + FRAME*2) {
+         for(;;) {
+            s = (float) pow(2, zoom/2.0f + 0.25f);
+            x2 = int(x*s);
+            y2 = int(y*s);
+            if (cur->x < x2 + FRAME*2 || cur->y < y2 + FRAME*2)
+               break;
+            ++zoom;
+         }
+      } else {
+         for(;;) {
+            s = (float) pow(2, zoom/2.0f - 0.25f);
+            x2 = int(x*s);
+            y2 = int(y*s);
+            if (cur->x > x2 + FRAME*2 || cur->y > y2 + FRAME*2)
+               break;
+            --zoom;
+         }
       }
+      // now resize
+      do {
+         zoom += step;
+         s = (float) pow(2, zoom/2.0);
+         if (x*s < 4 || y*s < 4 || x*s > 4000 || y*s > 3000)
+            return;
+         x2 = int(x*s) + 2*FRAME;
+         y2 = int(y*s) + 2*FRAME;
+      } while (x2 == cur->x || y2 == cur->y);
    } else {
-      for(;;) {
-         s = (float) pow(2, zoom/2.0f - 0.25f);
-         x2 = int(x*s);
-         y2 = int(y*s);
-         if (cur->x > x2 + FRAME*2 || cur->y > y2 + FRAME*2)
-            break;
-         --zoom;
-      }
+      RECT rect;
+      GetWindowRect(win, &rect);
+      x2 = rect.right - rect.left;
+      y2 = rect.bottom - rect.top;
+      if (step > 0 && x2 <= 1200 && y2 <= 1024)
+         x2 <<= 1, y2 <<= 1;
+      if (step < 0 && x2 >= 64 && y2 >= 64)
+         x2 >>= 1, y2 >>= 1;
+
    }
-   // now resize
-   do {
-      zoom += step;
-      s = (float) pow(2, zoom/2.0);
-      if (x*s < 4 || y*s < 4 || x*s > 4000 || y*s > 3000)
-         return;
-      x2 = int(x*s) + 2*FRAME;
-      y2 = int(y*s) + 2*FRAME;
-   } while (x2 == cur->x || y2 == cur->y);
 
    {
       RECT rect;
@@ -962,7 +1033,7 @@ void resize(int step)
       enqueue_resize(x,y,x2,y2);
    }
 
-   display_mode = zoom==1 ? DISPLAY_actual : DISPLAY_current;
+   display_mode = zoom==0 ? DISPLAY_actual : DISPLAY_current;
 }
 
 enum
@@ -1108,6 +1179,27 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          break;
       }
 
+      case WM_APP_LOAD_ERROR:
+      case WM_APP_DECODE_ERROR:
+      {
+         int best_lru=0,i;
+         volatile ImageFile *best = NULL;
+         for (i=0; i < MAX_CACHED_IMAGES; ++i) {
+            if (cache[i].lru > best_lru) {
+               if (MAIN_OWNS(&cache[i])) {
+                  if (cache[i].status >= LOAD_error_reading) {
+                     best_lru = cache[i].lru;
+                     best = &cache[i];
+                  }
+               }
+            }
+         }
+         if (best->status == LOAD_error_reading || best->status == LOAD_error_decoding) {
+            set_error(best);
+         }
+         break;
+      }
+
       case WM_APP_DECODED: {
          // scan the filelist for the highest-lru, decoded image
          int i;
@@ -1129,6 +1221,14 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          break;
       }
 
+      case WM_MOUSEWHEEL: {
+         int zdelta = (short) HIWORD(wParam);
+         // ignore scaling factor and step 1 by 1
+         if (zdelta > 0) resize(1);
+         if (zdelta < 0) resize(-1);
+         break;
+      }
+         
       case WM_MOUSEMOVE:
       case WM_LBUTTONDOWN:
       case WM_RBUTTONDOWN:
@@ -1310,6 +1410,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    hInst = hInstance;
    GlobalMemoryStatus(&mem);
    physmem = mem.dwTotalPhys;
+   max_cache_bytes = physmem / 6;
+   if (max_cache_bytes > 256 << 20) max_cache_bytes = 256 << 20;
+
+   strcat(helptext_center, VERSION);
 
    /* Register the frame class */
    memset(&wndclass, 0, sizeof(wndclass));
@@ -1385,6 +1489,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
       ideal_window_size(w2,h2, &w,&h, &x,&y);
 
       if (w == source->x+FRAME*2 && h == source->y+FRAME*2) {
+         display_error[0] = 0;
          cur = bmp_alloc(image_x + FRAME*2, image_y + FRAME*2);
          frame(cur);
          {
@@ -1400,6 +1505,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
       } else {
          // size is not an exact match
          queue_resize(w,h, (ImageFile *) &cache[0], TRUE);
+         display_error[0] = 0;
          cur = pending_resize.image;
          pending_resize.image = NULL;
       }
@@ -1423,7 +1529,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    for(;;) {
       // if we're not currently resizing, start a resize
       if (qs.w && pending_resize.size.w == 0) {
-         if (cur_is_current() && ((qs.w == cur->x && qs.h >= cur->y) || (qs.h == cur->y && qs.w >= cur->x))) {
+         if (cur_is_current() && (!cur || (qs.w == cur->x && qs.h >= cur->y) || (qs.h == cur->y && qs.w >= cur->x))) {
             // no resize necessary, just a variant of the current shape
             MoveWindow(win, qs.x,qs.y,qs.w,qs.h, TRUE);
             InvalidateRect(win, NULL, FALSE);
@@ -1445,6 +1551,7 @@ o(("Enqueueing resize\n"));
 o(("Finished resize\n"));
                imfree(cur);
                cur = pending_resize.image;
+               display_error[0] = 0;
                cur_filename = pending_resize.filename;
                pending_resize.filename = NULL;
                SetWindowPos(hWnd,NULL,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, SWP_NOZORDER);

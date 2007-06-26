@@ -1,1 +1,1 @@
-set VERSION=0.53
+set VERSION="0.54"

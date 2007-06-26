@@ -2,7 +2,7 @@
 
 = Release =
 
-The current version is 0.53.
+The current version is 0.54.
 
 
 = Release Notes =
