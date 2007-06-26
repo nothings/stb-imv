@@ -20,8 +20,6 @@
 #pragma comment(linker, "/FILEALIGN:0x200")
 //#pragma comment(linker, "/OPT:NOWIN98")
 
-#define WIN32_MEAN_AND_LEAN
-#define WIN32_EXTRA_LEAN
 #define _WIN32_WINNT 0x0400
 #include <windows.h>
 #include <stdio.h>
@@ -36,8 +34,9 @@
 
 void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
+#ifdef _DEBUG
 int do_debug;
-void o(char *str, ...)
+void ods(char *str, ...)
 {
    if (do_debug) {
       char buffer[1024];
@@ -48,6 +47,11 @@ void o(char *str, ...)
       OutputDebugString(buffer);
    }
 }
+#define o(x) ods x
+#else
+#define o(x)
+#endif
+
 
 #define FRAME   3
 #define FRAME2  (FRAME >> 1)
@@ -184,19 +188,22 @@ void *diskload_task(void *p)
       DiskCommand dc;
 
       // wait for a command from the main thread
-o("READ: Waiting for disk request.\n");
+o(("READ: Waiting for disk request.\n"));
       stb_sem_waitfor(disk_command_queue);
 
       // grab the command; don't let the command or the cache change while we do it
       stb_mutex_begin(cache_mutex);
       {
          dc = dc_shared;
-         for (i=0; i < dc.num_files; ++i)
+         for (i=0; i < dc.num_files; ++i) {
             dc.files[i]->status = LOAD_reading;
+            assert(dc.files[i]->filedata == NULL);
+         }
+         dc_shared.num_files = 0;
       }
       stb_mutex_end(cache_mutex);
 
-o("READ: Got disk request, %d items.\n", dc.num_files);
+o(("READ: Got disk request, %d items.\n", dc.num_files));
       for (i=0; i < dc.num_files; ++i) {
          int n;
          uint8 *data;
@@ -204,10 +211,11 @@ o("READ: Got disk request, %d items.\n", dc.num_files);
 
          // check if the main thread changed its mind about this
          if (dc.files[i]->bail) {
-o("READ: Bailing on disk request\n");
+o(("READ: Bailing on disk request\n"));
             dc.files[i]->status = LOAD_inactive;
          } else {
-o("READ: Loading file %s\n", dc.files[i]->filename);
+o(("READ: Loading file %s\n", dc.files[i]->filename));
+            assert(dc.files[i]->filedata == NULL);
             data = stb_file(dc.files[i]->filename, &n);
          
             // don't need to mutex these, because we own them via ->status
@@ -233,7 +241,7 @@ o("READ: Loading file %s\n", dc.files[i]->filename);
 
          }
       }
-o("READ: Finished command\n");
+o(("READ: Finished command\n"));
    }
 }
 
@@ -275,17 +283,17 @@ void *decode_task(void *p)
       volatile ImageFile *f;
       f = decoder_choose();
       if (f == NULL) {
-o("DECODE: blocking\n");
+o(("DECODE: blocking\n"));
          stb_sem_waitfor(decode_queue);
-o("DECODE: woken\n");
+o(("DECODE: woken\n"));
       } else {
          int x,y,n;
          uint8 *data;
          assert(f->status == LOAD_decoding);
-o("DECIDE: decoding %s\n", f->filename);
+o(("DECIDE: decoding %s\n", f->filename));
          data = stbi_load_from_memory(f->filedata, f->len, &x, &y, &n, BPP);
          decoder_idle = TRUE;
-o("DECODE: decoded %s\n", f->filename);
+o(("DECODE: decoded %s\n", f->filename));
          free(f->filedata);
          f->filedata = NULL;
          if (data == NULL) {
@@ -390,6 +398,7 @@ Image image_region(Image *p, int x, int y, int w, int h)
 static void image_resize(Image *dest, Image *src, ImageFile *cache);
 
 Image *cur;
+char *cur_filename;
 
 void display(HWND win, HDC hdc)
 {
@@ -425,6 +434,7 @@ struct
 {
    queued_size size;
    Image *image;
+   char *filename;
 } pending_resize;
 
 typedef struct
@@ -489,6 +499,7 @@ void queue_resize(int w, int h, ImageFile *src_c, int immediate)
    if (!immediate) {
       src_c->status = LOAD_resizing;
       pending_resize.image = NULL;
+      pending_resize.filename = strdup(src_c->filename);
       stb_workq(resize_workers, work_resize, &res, &pending_resize.image);
    } else {
       image_resize(&res.dest, src, NULL);
@@ -513,23 +524,50 @@ void enqueue_resize(int left, int top, int width, int height)
 
 void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y);
 
-void update_source(ImageFile *q)
+enum
 {
-   Image *z = q->image;
+   DISPLAY_actual,
+   DISPLAY_current,
+
+   DISPLAY__num,
+};
+
+int display_mode;
+
+void size_to_current(int maximize)
+{
    int w2,h2;
    int w,h,x,y;
-
-   source = z;
-   source_c = q;
+   Image *z = source;
 
    w2 = source->x+FRAME*2, h2 = source->y+FRAME*2;
-   ideal_window_size(w2,h2, &w,&h, &x,&y);
+   switch (display_mode) {
+      case DISPLAY_actual:
+         ideal_window_size(w2,h2, &w,&h, &x,&y);
+         break;
+      case DISPLAY_current:
+         if (maximize) {
+            x = y = -FRAME;
+            w = GetSystemMetrics(SM_CXSCREEN) + FRAME*2;
+            h = GetSystemMetrics(SM_CYSCREEN) + FRAME*2;
+         } else {
+            RECT rect;
+            GetWindowRect(win, &rect);
+            x = rect.left;
+            y = rect.top;
+            w = rect.right - rect.left;
+            h = rect.bottom - rect.top;
+         }
+         break;
+   }
 
-   if (w == source->x+FRAME*2 && h == source->y+FRAME*2) {
+   if (w == w2 && h == h2) {
       int j;
       unsigned char *p = z->pixels;
       imfree(cur);
+      free(cur_filename);
       cur = bmp_alloc(z->x + FRAME*2, z->y + FRAME*2);
+      cur_filename = strdup(source_c->filename);
       frame(cur);
       {
          for (j=0; j < z->y; ++j) {
@@ -546,6 +584,22 @@ void update_source(ImageFile *q)
       qs.w = w;
       qs.h = h;
    }
+}
+
+void update_source(ImageFile *q)
+{
+   Image *z = q->image;
+
+   source = z;
+   source_c = q;
+
+   size_to_current(FALSE);
+}
+
+void toggle_display(void)
+{
+   display_mode = (display_mode + 1) % DISPLAY__num;
+   size_to_current(TRUE);
 }
 
 char path_to_file[4096], *filename;
@@ -648,7 +702,7 @@ void flush_cache(int locked)
          }
          if (MAIN_OWNS(&p) && p.status != LOAD_unused) {
             if (!locked) stb_mutex_end(cache_mutex);
-o("MAIN: freeing cache: %s\n", p.filename);
+o(("MAIN: freeing cache: %s\n", p.filename));
             stb_sdict_remove(file_cache, p.filename, NULL);
             --occupied_slots; // occupied slots
             if (p.status == LOAD_available)
@@ -663,7 +717,7 @@ o("MAIN: freeing cache: %s\n", p.filename);
          }
       }
       if (!locked) stb_mutex_end(cache_mutex);
-o("Reduced to %d megabytes\n", total >> 20);
+o(("Reduced to %d megabytes\n", total >> 20));
    }
 }
 
@@ -702,20 +756,16 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
    } else {
       int i,tried_again=FALSE;
       // find a cache slot
-      try_again:
       for (i=0; i < MAX_CACHED_IMAGES; ++i)
          if (cache[i].status == LOAD_unused)
             break;
       if (i == MAX_CACHED_IMAGES) {
-         if (tried_again) {
-            stb_fatal("Internal logic error: no free cache slots, but flush_cache() should free a few");
-         }  
-         tried_again = TRUE;
-         flush_cache(TRUE);
-         goto try_again;
+         stb_fatal("Internal logic error: no free cache slots, but flush_cache() should free a few");
+         return;
       }
       z = &cache[i];
       free(z->filename);
+      assert(z->filedata == NULL);
       z->filename = strdup(filename);
       z->lru = 0;
       z->status = LOAD_inactive;
@@ -723,6 +773,7 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
    }
    assert(z->status == LOAD_inactive);
 
+o(("MAIN: proposing %s\n", z->filename));
    z->status = LOAD_inactive;
    z->image = NULL;
    z->bail = 0;
@@ -749,6 +800,7 @@ void advance(int dir)
 
    // need to grab the cache
    stb_mutex_begin(cache_mutex);
+   flush_cache(TRUE);
    dc.num_files = 0;
    queue_disk_command(&dc, cur_loc, 1);           // first thing to load: this file
    if (dir) {
@@ -758,6 +810,8 @@ void advance(int dir)
 
    if (dc.num_files) {
       dc_shared = dc;
+      for (i=0; i < dc.num_files; ++i)
+         assert(dc.files[i]->filedata == NULL);
       stb_sem_release(disk_command_queue);
    }
    stb_mutex_end(cache_mutex);
@@ -782,6 +836,7 @@ void open_file(void)
    filename = filenamebuffer;
    stb_fixpath(filename);
    stb_splitpath(path_to_file, filename, STB_PATH);
+   free_fileinfo();
    init_filelist();
    advance(0);
 }
@@ -834,6 +889,8 @@ void resize(int step)
       y -= y2>>1;
       enqueue_resize(x,y,x2,y2);
    }
+
+   display_mode = zoom==1 ? DISPLAY_actual : DISPLAY_current;
 }
 
 enum
@@ -864,11 +921,11 @@ static void cursor_regions(int *x0, int *y0, int *x1, int *y1)
    if (w2 < 12) {
       w2 = w >> 2;
       if (w2 < 4) w2 = w >> 1;
-   }
+   } else if (w2 > 100) w2 = 100;
    if (h2 < 12) {
       h2 = h >> 2;
       if (h2 < 4) h2 = h >> 1;
-   }
+   } else if (h2 > 100) h2 = 100;
    if (h2 < w2) w2 = h2;
    if (w2 < h2) h2 = w2;
    *x0 = w2;
@@ -895,6 +952,9 @@ void set_cursor(int x, int y)
 void mouse(UINT ev, int x, int y)
 {
    switch (ev) {
+      case WM_LBUTTONDBLCLK:
+         toggle_display();
+         break;
       case WM_LBUTTONDOWN:
          if (!anymode()) {
             RECT rect;
@@ -933,8 +993,10 @@ void mouse(UINT ev, int x, int y)
                RECT rect;
                GetWindowRect(win, &rect);
                assert(rx || ry);
+               display_mode = DISPLAY_current;
+
                #define LIMIT 16
-               if (rx < 0) rect.left   = stb_min(rect.left+x-ex, rect.right+-LIMIT);
+               if (rx < 0) rect.left   = stb_min(rect.left+x-ex, rect.right-LIMIT);
                if (rx > 0) rect.right  = stb_max(rect.left+LIMIT, rect.left+x-ex2);
                if (ry < 0) rect.top    = stb_min(rect.top+y-ey, rect.bottom-LIMIT);
                if (ry > 0) rect.bottom = stb_max(rect.top+LIMIT, rect.top+y-ey2);
@@ -997,6 +1059,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       case WM_RBUTTONDOWN:
       case WM_LBUTTONUP:
       case WM_RBUTTONUP:
+      case WM_LBUTTONDBLCLK:
          mouse(uMsg, (short) LOWORD(lParam), (short) HIWORD(lParam));
          return 0;
 
@@ -1073,7 +1136,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                break;
 
             case MY_ALT | '\r':
-               // alt-enter
+               toggle_display();
                break;
             default:
                return DefWindowProc (hWnd, uMsg, wParam, lParam);
@@ -1133,6 +1196,12 @@ void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
    }
 }
 
+int cur_is_current(void)
+{
+   if (!cur_filename) return FALSE;
+   if (!source_c || !source_c->filename) return FALSE;
+   return !strcmp(cur_filename, source_c->filename);
+}
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
@@ -1150,7 +1219,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    int image_n;
 
    resize_threads = stb_processor_count();
+   #ifdef _DEBUG
    do_debug = IsDebuggerPresent();
+   #endif
 
    hInst = hInstance;
    GlobalMemoryStatus(&mem);
@@ -1159,7 +1230,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    /* Register the frame class */
    memset(&wndclass, 0, sizeof(wndclass));
    wndclass.cbSize        = sizeof(wndclass);
-   wndclass.style         = CS_OWNDC;
+   wndclass.style         = CS_OWNDC | CS_DBLCLKS;
    wndclass.lpfnWndProc   = (WNDPROC)MainWndProc;
    wndclass.hInstance     = hInstance;
    wndclass.hIcon         = LoadIcon(hInstance, szAppName);
@@ -1248,6 +1319,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
          cur = pending_resize.image;
          pending_resize.image = NULL;
       }
+      cur_filename = strdup(filename);
 
       wx = w;
       wy = h;
@@ -1267,12 +1339,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    for(;;) {
       // if we're not currently resizing, start a resize
       if (qs.w && pending_resize.size.w == 0) {
-         if ((qs.w == cur->x && qs.h >= cur->y) || (qs.h == cur->y && qs.w >= cur->x)) {
+         if (cur_is_current() && ((qs.w == cur->x && qs.h >= cur->y) || (qs.h == cur->y && qs.w >= cur->x))) {
             // no resize necessary, just a variant of the current shape
             MoveWindow(win, qs.x,qs.y,qs.w,qs.h, TRUE);
             InvalidateRect(win, NULL, FALSE);
          } else {
-o("Enqueueing resize\n");
+o(("Enqueueing resize\n"));
             pending_resize.size = qs;
             queue_resize(qs.w, qs.h, source_c, FALSE);
          }
@@ -1286,9 +1358,11 @@ o("Enqueueing resize\n");
             if (!pending_resize.image) {
                Sleep(10);
             } else {
-o("Finished resize\n");
+o(("Finished resize\n"));
                imfree(cur);
                cur = pending_resize.image;
+               cur_filename = pending_resize.filename;
+               pending_resize.filename = NULL;
                SetWindowPos(hWnd,NULL,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, SWP_NOZORDER);
                barrier();
                pending_resize.size.w = 0;

@@ -51,3 +51,7 @@ Multiple images:
 UNINSTALLING
 
   Delete it.
+
+
+RELEASE NOTES
+
