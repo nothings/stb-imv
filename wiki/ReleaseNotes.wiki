@@ -7,8 +7,6 @@ The current version is 0.53.
 
 = Release Notes =
 
-  Version 0.55 [todo]
-
   Version 0.54 (2007-06-26)
     * bugfix: keep current window position while switching windows in actual-size mode
     * feature: mousewheel to resize
