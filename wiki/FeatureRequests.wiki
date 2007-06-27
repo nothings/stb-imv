@@ -41,7 +41,7 @@ Developers especially need to be cautious about saying that features are easy. T
 
 Of these, #1 is most visible, and #4 is the most important (and perhaps least-considered). So let me address the other two first.
 
-2. Most small features will not increase the executable size much. As long as *imv(stb)* stays under 100KB, I'm not too worried, so there's plenty of room to add new features.
+2. Most small features will not increase the executable size much. As long as *imv(stb)* stays under 100KB, I'm not too worried, so there's plenty of room to add new features. But that doesn't mean a feature that uses 40KB is ok! A feature that requires 1KB is a no-brainer; we've got room for 50 of those. A feature that uses 10KB only leaves us room for 4 more, so it better be darn important.
 
 3. Performance overhead for users who don't use the feature must be minimized. In some cases this is trivial, in other cases this may significantly expand the basic development cost.
 
