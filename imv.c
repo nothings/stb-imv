@@ -382,26 +382,27 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image
    }
 }
 
+int extra_border = TRUE;
 void frame(Image *z)
 {
    int i;
    z->frame = FRAME;
    memset(z->pixels, 0, FRAME*z->stride);
    memset(z->pixels + z->stride*(z->y-FRAME), 0, FRAME*z->stride);
-   #ifdef GREY
+   if (extra_border) {
       memset(z->pixels + z->stride*FRAME2 + FRAME2*BPP, GREY, (z->x-FRAME2*2)*BPP);
       memset(z->pixels + z->stride*(z->y-FRAME2-1) + FRAME2*BPP, GREY, (z->x-FRAME2*2)*BPP);
-   #endif
+   }
    for (i=FRAME; i < z->y-FRAME; ++i) {
       memset(z->pixels + i*z->stride, 0, FRAME*BPP);
       memset(z->pixels + i*z->stride + (z->x-FRAME)*BPP, 0, FRAME*BPP);
    }
-   #ifdef GREY
-   for (i=2; i < z->y-2; ++i) {
-      memset(z->pixels + i*z->stride+FRAME2*BPP, GREY, BPP);
-      memset(z->pixels + i*z->stride + (z->x-FRAME2-1)*BPP, GREY, BPP);
+   if (extra_border) {
+      for (i=2; i < z->y-2; ++i) {
+         memset(z->pixels + i*z->stride+FRAME2*BPP, GREY, BPP);
+         memset(z->pixels + i*z->stride + (z->x-FRAME2-1)*BPP, GREY, BPP);
+      }
    }
-   #endif
 }
 
 void imfree(Image *x)
@@ -429,11 +430,14 @@ char *cur_filename;
 int show_help=0;
 
 char helptext_center[128] =
-   "imv(stb) version "
+   "imv(stb)\n"
+   "Copyright 2007 Sean Barret\n"
+   "http://code.google.com/p/stb-imv\n"
+   "version "
 ;
 
 char helptext_left[] =
-   "\n\n"
+   "\n\n\n\n"
    "ESC: exit\n"
    "ALT-ENTER: toggle size\n"
    "CTRL-PLUS: zoom in\n"
@@ -441,15 +445,20 @@ char helptext_left[] =
    "LEFT, SPACE: next image\n"
    "RIGHT, BACKSPACE: previous image\n"
    "CTRL-O: open image\n"
-   "F1, H: help"
+   "F: toggle frame\n"
+   "SHIFT-F: toggle white stripe in frame\n"
+   "CTRL-F: toggle both\n"
+   "L: toggle filename label\n"
+   "F1, H, ?: help"
 ;
 
 char helptext_right[] =
-   "\n\n"
+   "\n\n\n\n\n"
    "right-click to exit\n"
    "left drag center to move\n"
    "left drag edges to resize\n"
    "double-click to toggle size\n"
+   "mousewheel to zoom\n"
    "\n"
 ;
 
@@ -486,6 +495,9 @@ void set_error(volatile ImageFile *z)
    source = NULL;
 }
 
+HFONT label_font;
+int show_frame = TRUE;
+int show_label = FALSE;
 void display(HWND win, HDC hdc)
 {
    RECT rect,r2;
@@ -517,6 +529,25 @@ void display(HWND win, HDC hdc)
    r2.right = x+cur->x;
    r2.top  = y + cur->y;   FillRect(hdc, &r2, b);
 
+   if (show_label) {
+      SIZE size;
+      RECT z;
+      HFONT old = NULL;
+      char *name = cur_filename ? cur_filename : "(none)";
+      if (label_font) old = SelectObject(hdc, label_font);
+      GetTextExtentPoint32(hdc, name, strlen(name), &size);
+      z.left = rect.left+1;
+      z.bottom = rect.bottom+1;
+      z.top = z.bottom - size.cy - 4;
+      z.right = z.left + size.cx + 10;
+
+      FillRect(hdc, &z, b);
+      z.bottom -= 2;
+      SetTextColor(hdc, RGB(255,255,255));
+      DrawText(hdc, name, -1, &z, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+      if (old) SelectObject(hdc, old);
+   }
+
    if (show_help) {
       int h2;
       RECT box = rect;
@@ -527,9 +558,9 @@ void display(HWND win, HDC hdc)
       box.top = stb_max((h - h2) >> 1, 0);
       box.bottom = box.top + h2;
       draw_nice(hdc, helptext_center, &box, DT_CENTER);
-      box.left -= 120; box.right -= 120;
+      box.left -= 150; box.right -= 150;
       draw_nice(hdc, helptext_left, &box, DT_CENTER);
-      box.left += 240; box.right += 240;
+      box.left += 300; box.right += 300;
       draw_nice(hdc, helptext_right, &box, DT_CENTER);
    }
 }
@@ -624,6 +655,8 @@ void enqueue_resize(int left, int top, int width, int height)
 {
    if (cur && ((width == cur->x && height >= cur->y) || (height == cur->y && width >= cur->x))) {
       // no resize necessary, just a variant of the current shape
+      if (!show_frame)
+         left += FRAME, top += FRAME, width -= 2*FRAME, height -= 2*FRAME;
       MoveWindow(win, left, top, width, height, TRUE);
       InvalidateRect(win, NULL, FALSE);
    } else {
@@ -633,6 +666,19 @@ void enqueue_resize(int left, int top, int width, int height)
       qs.h = height;
    }
 }
+
+// do all operations _as if_ we had the frame
+void GetAdjustedWindowRect(HWND win, RECT *rect)
+{
+   GetWindowRect(win, rect);
+   if (!show_frame) {
+      rect->left -= FRAME;
+      rect->top -= FRAME;
+      rect->right += FRAME;
+      rect->bottom += FRAME;
+   }
+}
+
 
 void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y);
 
@@ -661,7 +707,7 @@ void size_to_current(int maximize)
          cx = GetSystemMetrics(SM_CXSCREEN);
          cy = GetSystemMetrics(SM_CYSCREEN);
          if (w <= cx && h <= cy) {
-            GetWindowRect(win, &rect);
+            GetAdjustedWindowRect(win, &rect);
             x = (rect.right + rect.left - w) >> 1;
             y = (rect.top + rect.bottom - h) >> 1;
             x = stb_clamp(x,0,cx-w);
@@ -676,7 +722,7 @@ void size_to_current(int maximize)
             h = GetSystemMetrics(SM_CYSCREEN) + FRAME*2;
          } else {
             RECT rect;
-            GetWindowRect(win, &rect);
+            GetAdjustedWindowRect(win, &rect);
             x = rect.left;
             y = rect.top;
             w = rect.right - rect.left;
@@ -701,6 +747,7 @@ void size_to_current(int maximize)
             p += z->x*BPP;
          }
       }
+      if (!show_frame) x+=FRAME,y+=FRAME,w-=FRAME*2,h-=FRAME*2;
       MoveWindow(win, x,y,w,h, TRUE);
       InvalidateRect(win, NULL, FALSE);
    } else {
@@ -709,6 +756,25 @@ void size_to_current(int maximize)
       qs.w = w;
       qs.h = h;
    }
+}
+
+void toggle_frame(void)
+{
+   RECT rect;
+   show_frame = !show_frame;
+   GetWindowRect(win, &rect);
+   if (show_frame) {
+      rect.left -= FRAME;
+      rect.right += FRAME;
+      rect.top -= FRAME;
+      rect.bottom += FRAME;
+   } else {
+      rect.left += FRAME;
+      rect.right -= FRAME;
+      rect.top += FRAME;
+      rect.bottom -= FRAME;
+   }
+   SetWindowPos(win, NULL, rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top, SWP_NOCOPYBITS|SWP_NOOWNERZORDER);
 }
 
 void update_source(ImageFile *q)
@@ -1013,7 +1079,7 @@ void resize(int step)
       } while (x2 == cur->x || y2 == cur->y);
    } else {
       RECT rect;
-      GetWindowRect(win, &rect);
+      GetAdjustedWindowRect(win, &rect);
       x2 = rect.right - rect.left;
       y2 = rect.bottom - rect.top;
       if (step > 0 && x2 <= 1200 && y2 <= 1024)
@@ -1025,7 +1091,7 @@ void resize(int step)
 
    {
       RECT rect;
-      GetWindowRect(win, &rect);
+      GetAdjustedWindowRect(win, &rect);
       x = (rect.left + rect.right)>>1;
       y = (rect.top + rect.bottom)>>1;
       x -= x2>>1;
@@ -1113,7 +1179,7 @@ void mouse(UINT ev, int x, int y)
             else
                setmode(MODE_drag);
             SetCapture(win);
-            GetWindowRect(win, &rect);
+            GetAdjustedWindowRect(win, &rect);
             ex = x;
             ey = y;
             ex2 = x - (rect.right-rect.left);
@@ -1134,7 +1200,7 @@ void mouse(UINT ev, int x, int y)
             }
             case MODE_resize: {
                RECT rect;
-               GetWindowRect(win, &rect);
+               GetAdjustedWindowRect(win, &rect);
                assert(rx || ry);
                display_mode = DISPLAY_current;
 
@@ -1276,6 +1342,11 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                advance(-1);
                break;
 
+            case 'l': case 'L':
+               show_label = !show_label;
+               InvalidateRect(win, NULL, FALSE);
+               break;
+
             default:
                return 1;
          }
@@ -1305,6 +1376,22 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             case VK_SLASH | MY_SHIFT:
                show_help = !show_help;
                InvalidateRect(win, NULL, FALSE);
+               break;
+
+            case 'F' | MY_SHIFT:
+               extra_border = !extra_border;
+               if (cur) frame(cur);
+               InvalidateRect(win, NULL, FALSE);
+               break;
+
+            case 'F':
+               toggle_frame();
+               break;
+
+            case 'F' | MY_CTRL:
+               toggle_frame();
+               extra_border = show_frame;
+               if (cur) frame(cur);
                break;
 
             case MY_CTRL | VK_OEM_PLUS:
@@ -1436,6 +1523,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    if (!RegisterClassEx(&wndclass))
       return FALSE;
 
+   {
+      LOGFONT lf;
+      memset(&lf, 0, sizeof(lf));
+      lf.lfHeight       = 12;
+      lf.lfOutPrecision = OUT_TT_PRECIS; // prefer truetype to raster fonts
+      strcpy(lf.lfFaceName, "Times New Roman");
+      label_font = CreateFontIndirect(&lf);
+   }
+
+
+
    if (argc < 1) {
       OPENFILENAME o;
       memset(&o, 0, sizeof(o));
@@ -1554,6 +1652,12 @@ o(("Finished resize\n"));
                display_error[0] = 0;
                cur_filename = pending_resize.filename;
                pending_resize.filename = NULL;
+               if (!show_frame) {
+                  pending_resize.size.x += FRAME;
+                  pending_resize.size.y += FRAME;
+                  pending_resize.size.w -= FRAME*2;
+                  pending_resize.size.h -= FRAME*2;
+               }
                SetWindowPos(hWnd,NULL,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, SWP_NOZORDER);
                barrier();
                pending_resize.size.w = 0;
