@@ -1,4 +1,4 @@
-  Version 0.55 [todo]
+  Version 0.55 (2007-06-27)
     * feature: toggle filename label
     * feature: toggle entire border
     * feature: toggle white stripe in border

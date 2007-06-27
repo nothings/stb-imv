@@ -38,8 +38,10 @@
 ;
 #undef set
 
+// trivial error handling
 void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
+// OutputDebugString with varargs, can be compiled out
 #ifdef _DEBUG
 int do_debug;
 void ods(char *str, ...)
