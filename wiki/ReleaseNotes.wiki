@@ -4,11 +4,14 @@
 
 This is an alpha version, targetting the eventual milestones:
 
-  version 0.90 - beta
+  version 0.90 - beta 
 
-  version 1.00 - stable release
+  version 1.00 - stable release 
 
 = Release Notes =
+
+  Version 0.56
+    * bugfix: stb_image wouldn't load jpegtran output (which is invalid JFIF)
 
   Version 0.55 (2007-06-27)
     * feature: toggle filename label
