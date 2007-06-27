@@ -2,14 +2,16 @@
 
 = Release =
 
-This is an alpha version, targetting the eventual milestones:
-
-  version 0.90 - beta
-
-  version 1.00 - stable release
+The current version is 0.54.
 
 
 = Release Notes =
+
+  Version 0.55 (2007-06-27)
+    * feature: toggle filename label
+    * feature: toggle entire border
+    * feature: toggle white stripe in border
+    * bugfix: display error message for files that don't load
 
   Version 0.54 (2007-06-26)
     * bugfix: keep current window position while switching windows in actual-size mode
@@ -26,5 +28,3 @@ This is an alpha version, targetting the eventual milestones:
 
   Version 0.52 (2007-06-25)
     * bugfix: hang when resizing first image
-
-
