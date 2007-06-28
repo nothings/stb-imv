@@ -2,8 +2,11 @@
 
 = Release =
 
-The current version is 0.54.
+This is an alpha version, targetting the eventual milestones:
 
+  version 0.90 - beta 
+
+  version 1.00 - stable release 
 
 = Release Notes =
 

@@ -20,11 +20,7 @@ rem # Make tarball directory
 mkdir ..\stb_imv_src-%VERSION%
 mkdir ..\stb_imv_src-%VERSION%\vc6
 copy vc6\stb_imv.ds? ..\stb_imv_src-%VERSION%\vc6
-copy *.c ..\stb_imv_src-%VERSION%
-copy *.h ..\stb_imv_src-%VERSION%
-copy COPYING ..\stb_imv_src-%VERSION%
-copy *.txt ..\stb_imv_src-%VERSION%
-copy *.bat ..\stb_imv_src-%VERSION%
+copy *.* ..\stb_imv_src-%VERSION%
 
 rem #
 

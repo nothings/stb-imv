@@ -95,15 +95,7 @@ SOURCE=..\imv.c
 # Begin Source File
 
 SOURCE=..\notes.txt
-
-!IF  "$(CFG)" == "stb_imv - Win32 Release"
-
 # PROP Exclude_From_Build 1
-
-!ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug"
-
-!ENDIF 
-
 # End Source File
 # Begin Source File
 
@@ -112,15 +104,7 @@ SOURCE=..\stb.h
 # Begin Source File
 
 SOURCE=..\version.bat
-
-!IF  "$(CFG)" == "stb_imv - Win32 Release"
-
 # PROP Exclude_From_Build 1
-
-!ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug"
-
-!ENDIF 
-
 # End Source File
 # End Target
 # End Project
