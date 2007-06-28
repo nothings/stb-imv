@@ -4,7 +4,7 @@ This page will be of interest to developers or potential developers.
 
 = Introduction =
 
-A programmer suggested using *!UpdateLayeredWindow()* or *GDI+* to support
+A programmer suggested using *!UpdateLayeredWindow()* to support
 (optionally) drawing images with alpha in them transparently on the desktop.
 (I will call this behavior "desktop alpha".)
 
