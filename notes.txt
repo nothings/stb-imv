@@ -1,3 +1,10 @@
+  Version 0.57
+    * bugfix: comment code
+    * bugfix: fix logic for fitting large images onscreen to not stop a few pixels short
+
+  Version 0.56
+    * bugfix: stb_image wouldn't load jpegtran output (which is invalid JFIF)
+
   Version 0.55 (2007-06-27)
     * feature: toggle filename label
     * feature: toggle entire border

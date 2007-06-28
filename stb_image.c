@@ -980,7 +980,9 @@ static int process_frame_header(int scan)
 
    for (i=0; i < img_n; ++i) {
       img_comp[i].id = get8();
-      if (img_comp[i].id != i+1) return e("bad component ID");   // JFIF requires
+      if (img_comp[i].id != i+1)   // JFIF requires
+         if (img_comp[i].id != i)  // jpegtran outputs non-JFIF-compliant files!
+            return e("bad component ID");
       z = get8();
       img_comp[i].h = (z >> 4);  if (!img_comp[i].h || img_comp[i].h > 4) return e("bad H");
       img_comp[i].v = z & 15;    if (!img_comp[i].h || img_comp[i].h > 4) return e("bad V");

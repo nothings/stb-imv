@@ -61,12 +61,17 @@ void ods(char *str, ...)
 #endif
 
 
+// size of border in pixels
 #define FRAME   3
+
+// location within frame of secondary border
 #define FRAME2  (FRAME >> 1)
 
+// color of secondary border
 #define GREY  192
 
 
+// internal messages (all used for waking up main thread from tasks)
 enum
 {
    WM_APP_DECODED = WM_APP,
@@ -75,6 +80,7 @@ enum
 };
 
 
+// a few extra options for GetSystemMetrics for old compilers
 #if WINVER < 0x0500
 #define SM_XVIRTUALSCREEN       76
 #define SM_YVIRTUALSCREEN       77
@@ -84,16 +90,15 @@ enum
 #define SM_SAMEDISPLAYFORMAT    81
 #endif
 
-CHAR  szAppName[]="stb_imv";
-HDC   hDC;
-HWND  win;
-HGLRC hRC;
-HINSTANCE hInst;
-
 char *displayName = "imv(stb)";
+CHAR  szAppName[] = "stb_imv";
+HWND  win;
 
+// number of bytes per pixel (not bits); can be 3 or 4
 #define BPP 4
 
+// lightweight SetDIBitsToDevice() wrapper
+// (once upon a time this was a platform-independent, hence the name)
 void platformDrawBitmap(HDC hdc, int x, int y, unsigned char *bits, int w, int h, int stride, int dim)
 {
    int i;
@@ -118,8 +123,7 @@ void platformDrawBitmap(HDC hdc, int x, int y, unsigned char *bits, int w, int h
          *(uint32 *)(bits+i) = (*(uint32 *)(bits+i) << 1);
 }
 
-
-
+// memory barrier for x86
 void barrier(void)
 {
     long dummy;
@@ -128,17 +132,23 @@ void barrier(void)
     }
 }
 
-
+// awake the main thread when something interesting happens
+void wake(int message)
+{
+   PostMessage(win, message, 0,0);
+}
 
 typedef struct
 {
-   int x,y,stride,frame;
-   unsigned char *pixels;
+   int x,y;         // size of the image
+   int stride;      // distance between rows in bytes  
+   int frame;       // does this image have a frame (border)?
+   uint8 *pixels;   // pointer to (0,0)th pixel
 } Image;
 
 enum
 {
-   // owned by main thread
+// owned by main thread
    LOAD_unused=0, // empty slot
 
    LOAD_inactive, // filename slot, not loaded
@@ -152,202 +162,136 @@ enum
    LOAD_error_decoding,
    LOAD_available, // loaded successfully
 
-   // owned by resizer
+// owned by resizer
    LOAD_resizing,
 
-   // owned by loader
+// owned by loader
    LOAD_reading,
 
-   // owned by decoder
+// owned by decoder
    LOAD_decoding,
 };
 
+// does the main thread own this? (if this is true, the main
+// thread can manipulate without locking, except for LOAD_reading_done
+// which requires locking)
 #define MAIN_OWNS(x)   ((x)->status <= LOAD_available)
 
+// data about a specific file
 typedef struct
 {
-   int priority;
-   char *filename;
-   char *filedata;
-   int len;
-   Image *image;
-   char *error;
-   int status;
-   int bail;
-   int lru;
+   char *filename;   // name of the file on disk, must be free()d
+   char *filedata;   // data loaded from disk -- passed from reader to decoder
+   int len;          // length of data loaded from disk -- as above
+   Image *image;     // cached image -- passed from decoder to main
+   char *error;      // error message -- from reader or decoder, must be free()d
+   int status;       // current status/ownership with LOAD_* enum
+   int bail;         // flag from main thread to work threads indicating to give up
+   int lru;          // the larger, the higher priority--effectively a timestamp
 } ImageFile;
 
+// controls for interlocking communications
 stb_mutex cache_mutex, decode_mutex;
 stb_semaphore decode_queue;
 stb_semaphore disk_command_queue;
 
+// a request communicated from the main thread to the disk-loader task
 typedef struct
 {
    int num_files;
    ImageFile *files[4];
 } DiskCommand;
 
+// there can only be one pending command in flight
 volatile DiskCommand dc_shared;
 
-// awake the main thread when something interesting happens
-void wake(int message)
-{
-   PostMessage(win, message, 0,0);
-}
-
-volatile ImageFile *image_decode_pending;
-
+// the disk loader sits in this loop forever
 void *diskload_task(void *p)
 {
    for(;;) {
       int i;
       DiskCommand dc;
 
-      // wait for a command from the main thread
-o(("READ: Waiting for disk request.\n"));
+      // wait to be woken up by a command from the main thread
+      o(("READ: Waiting for disk request.\n"));
       stb_sem_waitfor(disk_command_queue);
+      // it's possible for the main thread to do:
+      //   1. ... store a command in the command buffer ...
+      //   2. sem_release()
+      //   3. ... store a command in the command buffer ...
+      //   4. sem_release()
+      // and for this thread to complete a previous command and
+      // reach the waitfor() right after step 3 above. If this happens,
+      // this thread will pass the waitfor() (setting the semaphore to 0),
+      // process the latest command, the main thread will do step 4 (setting
+      // the semaphore to 1), and then this thread comes back around and
+      // passes the waitfor() again with no actual pending command. This
+      // case is handled below by clearing the command length to 0.
 
       // grab the command; don't let the command or the cache change while we do it
       stb_mutex_begin(cache_mutex);
       {
+         // copy the command into a local buffer
          dc = dc_shared;
+         // claim ownership over all the files in the command
          for (i=0; i < dc.num_files; ++i) {
             dc.files[i]->status = LOAD_reading;
             assert(dc.files[i]->filedata == NULL);
          }
+         // clear the command so we won't re-process it
          dc_shared.num_files = 0;
       }
       stb_mutex_end(cache_mutex);
 
-o(("READ: Got disk request, %d items.\n", dc.num_files));
+      o(("READ: Got disk request, %d items.\n", dc.num_files));
       for (i=0; i < dc.num_files; ++i) {
          int n;
          uint8 *data;
          assert(dc.files[i]->status == LOAD_reading);
 
          // check if the main thread changed its mind about this
+         // e.g. if this is the third file in a request, and the main thread
+         // has already made another command pending, then it will set this
+         // flag on previous requests, and we shouldn't waste time loading
+         // data that's no longer high-priority
          if (dc.files[i]->bail) {
-o(("READ: Bailing on disk request\n"));
+            o(("READ: Bailing on disk request\n"));
             dc.files[i]->status = LOAD_inactive;
          } else {
-o(("READ: Loading file %s\n", dc.files[i]->filename));
+            o(("READ: Loading file %s\n", dc.files[i]->filename));
             assert(dc.files[i]->filedata == NULL);
+
+            // read the data
             data = stb_file(dc.files[i]->filename, &n);
          
+            // update the results
             // don't need to mutex these, because we own them via ->status
             if (data == NULL) {
+               o(("READ: error reading\n"));
                dc.files[i]->error = strdup("can't open");
                dc.files[i]->filedata = NULL;
                dc.files[i]->len = 0;
                barrier();
                dc.files[i]->status = LOAD_error_reading;
-               wake(WM_APP_LOAD_ERROR);
+               wake(WM_APP_LOAD_ERROR); // wake main thread to react to error
             } else {
+               o(("READ: Successfully read %d bytes\n", n));
                dc.files[i]->error = NULL;
                assert(dc.files[i]->filedata == NULL);
                dc.files[i]->filedata = data;
                dc.files[i]->len = n;
                barrier();
                dc.files[i]->status = LOAD_reading_done;
-
-               // now set the image decode command for what we just loaded
-               // wake the main thread? not needed, it has nothing to do
-               // wake(WM_APP_LOADED);
-               stb_sem_release(decode_queue);
+               stb_sem_release(decode_queue); // wake the decode task if needed
             }
 
          }
       }
-o(("READ: Finished command\n"));
    }
 }
 
-#define MAX_CACHED_IMAGES  200
-volatile ImageFile cache[MAX_CACHED_IMAGES];
-void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image_n);
-volatile int decoder_idle = TRUE;
-
-volatile ImageFile *decoder_choose(void)
-{
-   int i, best_lru=0;
-   volatile ImageFile *best = NULL;
-start:
-
-   for (i=0; i < MAX_CACHED_IMAGES; ++i) {
-      if (cache[i].status == LOAD_reading_done) {
-         if (cache[i].lru > best_lru) {
-            best = &cache[i];
-            best_lru = best->lru;
-         }
-      }
-   }
-   if (best) {
-      int retry = FALSE;
-      stb_mutex_begin(cache_mutex);
-      if (best->status == LOAD_reading_done)
-         best->status = LOAD_decoding;
-      else
-         retry = TRUE;
-      stb_mutex_end(cache_mutex);
-      if (retry) goto start;
-   }
-   return best;
-}
-
-void *decode_task(void *p)
-{
-   for(;;) {
-      volatile ImageFile *f;
-      f = decoder_choose();
-      if (f == NULL) {
-o(("DECODE: blocking\n"));
-         stb_sem_waitfor(decode_queue);
-o(("DECODE: woken\n"));
-      } else {
-         int x,y,n;
-         uint8 *data;
-         assert(f->status == LOAD_decoding);
-o(("DECIDE: decoding %s\n", f->filename));
-         data = stbi_load_from_memory(f->filedata, f->len, &x, &y, &n, BPP);
-         decoder_idle = TRUE;
-o(("DECODE: decoded %s\n", f->filename));
-         free(f->filedata);
-         f->filedata = NULL;
-         if (data == NULL) {
-            f->error = strdup(stbi_failure_reason());
-            barrier();
-            f->status = LOAD_error_reading;
-            wake(WM_APP_DECODE_ERROR);
-         } else {
-            f->image = (Image *) malloc(sizeof(*f->image));
-            make_image(f->image, x,y,data,n);
-            barrier();
-            f->status = LOAD_available;
-
-            // wake up the main thread in case this new data is useful
-            wake(WM_APP_DECODED);
-         }
-      }
-   }
-}
-
-Image *source;
-ImageFile *source_c;
-
-Image *bmp_alloc(int x, int y)
-{
-   Image *i = malloc(sizeof(*i));
-   if (!i) return NULL;
-   i->x = x;
-   i->y = y;
-   i->stride = x*BPP;
-   i->stride += (-i->stride) & 3;
-   i->pixels = malloc(i->stride * i->y);
-   i->frame = 0;
-   if (i->pixels == NULL) { free(i); return NULL; }
-   return i;
-}
-
+// given raw decoded data, make it into a proper Image (e.g. creating a
+// windows-compatible bitmap with 4-byte aligned rows)
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image_n)
 {
    int i,j,k=0;
@@ -357,15 +301,16 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image
    z->stride = image_x*BPP;
    z->frame = 0;
 
-   // swap RGB to BGR
    for (j=0; j < image_y; ++j) {
       for (i=0; i < image_x; ++i) {
+         // swap RGB to BGR
          unsigned char t = image_data[k+0];
          image_data[k+0] = image_data[k+2];
          image_data[k+2] = t;
-         #if BPP==4
+
+          #if BPP==4
+         // if image had an alpha channel, pre-blend with background
          if (image_n == 4) {
-            // apply alpha
             unsigned char *p = image_data+k;
             int a = (255-p[3]);
             if ((i ^ j) & 8) {
@@ -384,7 +329,138 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image
    }
 }
 
+
+// Max entries in image cache. This shouldn't be TOO large, because we
+// traverse it inside mutexes sometimes. Also, for large images, we'll
+// hit cache-size limits fairly quickly (a 2 megapixel image requires
+// 8MB, so you could only fit 50 in a 400MB cache), so no reason to be
+// too large anyway
+#define MAX_CACHED_IMAGES  200
+
+// no idea if it needs to be volatile, decided not to worry about proving
+// it one way or the other
+volatile ImageFile cache[MAX_CACHED_IMAGES];
+
+// choose which image to decode and claim ownership
+volatile ImageFile *decoder_choose(void)
+{
+   int i, best_lru=0;
+   volatile ImageFile *best = NULL;
+
+   // if we get unlucky we may have to bail and start over
+start:
+
+   // iterate through the cache and find the ready-to-decode image
+   // that was most in demand (the highest priority will be the most-recently
+   // accessed image or, for prefetching, one right next to it; but this
+   // is policy determined by the main thread, not by this thread).
+   for (i=0; i < MAX_CACHED_IMAGES; ++i) {
+      if (cache[i].status == LOAD_reading_done) {
+         if (cache[i].lru > best_lru) {
+            best = &cache[i];
+            best_lru = best->lru;
+         }
+      }
+   }
+   // it's possible there is no image to decode; see the description
+   // in diskload_task of how it's possible for a task to be woken
+   // from the sem_release() without there being a pending command.
+   if (best) {
+      int retry = FALSE;
+      // if there is a best one, it's possible that while iterating
+      // it was flushed by the main thread. so let's make sure it's
+      // still ready to decode. (Of course it ALSO could have changed
+      // lru priority and other such, or not be the best anymore, but
+      // it's no big deal to get that wrong since it's close.)
+      stb_mutex_begin(cache_mutex);
+      {
+         if (best->status == LOAD_reading_done)
+            best->status = LOAD_decoding;
+         else
+            retry = TRUE;
+      }
+      stb_mutex_end(cache_mutex);
+      // if the status changed out from under us, try again
+      if (retry)
+         goto start;
+   }
+   return best;
+}
+
+void *decode_task(void *p)
+{
+   for(;;) {
+
+      // find the best image to decode
+      volatile ImageFile *f = decoder_choose();
+
+      if (f == NULL) {
+         // wait for load thread to wake us
+         o(("DECODE: blocking\n"));
+         stb_sem_waitfor(decode_queue);
+         o(("DECODE: woken\n"));
+      } else {
+         int x,y,n;
+         uint8 *data;
+         assert(f->status == LOAD_decoding);
+
+         // decode image
+         o(("DECIDE: decoding %s\n", f->filename));
+         data = stbi_load_from_memory(f->filedata, f->len, &x, &y, &n, BPP);
+         o(("DECODE: decoded %s\n", f->filename));
+
+         // free copy of data from disk, which we don't need anymore
+         free(f->filedata);
+         f->filedata = NULL;
+
+         if (data == NULL) {
+            // error reading file, record the reason for it
+            f->error = strdup(stbi_failure_reason());
+            barrier();
+            f->status = LOAD_error_reading;
+            // wake up the main thread in case this is the most recent image
+            wake(WM_APP_DECODE_ERROR);
+         } else {
+            // post-process the image into the right format
+            f->image = (Image *) malloc(sizeof(*f->image));
+            make_image(f->image, x,y,data,n);
+            barrier();
+            f->status = LOAD_available;
+
+            // wake up the main thread in case this is the most recent image
+            wake(WM_APP_DECODED);
+         }
+      }
+   }
+}
+
+// the image cache entry currently trying to be displayed (may be waiting on resizer)
+ImageFile *source_c;
+// the image currently being displayed--historically redundant to source_c->image
+Image *source;
+
+// allocate an image in windows-friendly format
+Image *bmp_alloc(int x, int y)
+{
+   Image *i = malloc(sizeof(*i));
+   if (!i) return NULL;
+   i->x = x;
+   i->y = y;
+   i->stride = x*BPP;
+   i->stride += (-i->stride) & 3;
+   i->pixels = malloc(i->stride * i->y);
+   i->frame = 0;
+   if (i->pixels == NULL) { free(i); return NULL; }
+   return i;
+}
+
+// toggle for whether to draw the stripe in the middle of the border
 int extra_border = TRUE;
+
+// build the border into an image--this was easier than drawing it on
+// the fly, although slightly less efficient, but probably totally
+// redundant now that we paint an infinite black border around the image?
+// reduces flickering of the stripe, I guess.
 void frame(Image *z)
 {
    int i;
@@ -415,6 +491,7 @@ void imfree(Image *x)
    }
 }
 
+// return an Image which is a sub-region of another image
 Image image_region(Image *p, int x, int y, int w, int h)
 {
    Image q;
@@ -425,9 +502,11 @@ Image image_region(Image *p, int x, int y, int w, int h)
    return q;
 }
 
-static void image_resize(Image *dest, Image *src, ImageFile *cache);
-
+// the currently displayed image--may slightly lag source/source_c
+// while waiting on a resize
 Image *cur;
+
+// the filename for the currently displayed image
 char *cur_filename;
 int show_help=0;
 
@@ -464,6 +543,11 @@ char helptext_right[] =
    "\n"
 ;
 
+// draw the help text semi-prettily
+// originally this was to try to avoid having to darken the image
+// that it's rendered over, but I couldn't make that work, and with
+// the darkened image there's no real need to do this, but hey, it
+// looks a little nicer so why not
 void draw_nice(HDC hdc, char *text, RECT *rect, uint flags)
 {
 #if 1
@@ -474,6 +558,7 @@ void draw_nice(HDC hdc, char *text, RECT *rect, uint flags)
    for (i=2; i >= 1; i -= 1)
    for (j=2; j >= 1; j -= 1)
    {
+      // displace the rectangle so as to displace the text
       RECT r = { rect->left+i, rect->top+j, rect->right+i, rect->bottom + j };
       if (i == 1 && j == 1)
          SetTextColor(hdc, RGB(0,0,0));
@@ -484,7 +569,10 @@ void draw_nice(HDC hdc, char *text, RECT *rect, uint flags)
    DrawText(hdc, text, -1, rect, flags);
 }
 
+// cached error message for most recent image
 char display_error[1024];
+
+// to make an image with an error the most recent image, call this
 void set_error(volatile ImageFile *z)
 {
    sprintf(display_error, "File:\n%s\nError:\n%s\n", z->filename, z->error);
@@ -498,29 +586,40 @@ void set_error(volatile ImageFile *z)
 }
 
 HFONT label_font;
-int show_frame = TRUE;
-int show_label = FALSE;
+int show_frame = TRUE;   // show border or not?
+int show_label = FALSE;  // 
 void display(HWND win, HDC hdc)
 {
    RECT rect,r2;
    HBRUSH b = GetStockObject(BLACK_BRUSH);
    int w,h,x,y;
+
+   // get the window size for centering
    GetClientRect(win, &rect);
    w = rect.right - rect.left;
    h = rect.bottom - rect.top;
+
+   // set the text rendering mode for our fancy text
    SetBkMode(hdc, TRANSPARENT);
 
+   // if the current image had an error, just display that
    if (display_error[0]) {
-      FillRect(hdc, &rect, b);
-      if (rect.bottom > rect.top + 100) rect.top += 50;
+      FillRect(hdc, &rect, b);  // clear to black -- will flicker
+      if (rect.bottom > rect.top + 100) rect.top += 50; // displace down from top; could center
       draw_nice(hdc, display_error, &rect, DT_CENTER);
       return;
    }
 
+   // because show_frame toggles the window size, and we center the bitmap,
+   // we just go ahead and render the entire bitmap with the border in it
+   // regardless of the show_frame toggle. You can see that when you resize
+   // a window in one dimension--the strip is still there, just off the edge
+   // of the window.
    x = (w - cur->x) >> 1;
    y = (h - cur->y) >> 1;
    platformDrawBitmap(hdc, x,y,cur->pixels, cur->x, cur->y, cur->stride, show_help);
-   // draw in the borders
+
+   // draw in infinite borders on all four sides
    r2 = rect;
    r2.right = x;           FillRect(hdc, &r2, b); r2=rect;
    r2.left = x + cur->x;   FillRect(hdc, &r2, b); r2 = rect;
@@ -537,6 +636,10 @@ void display(HWND win, HDC hdc)
       HFONT old = NULL;
       char *name = cur_filename ? cur_filename : "(none)";
       if (label_font) old = SelectObject(hdc, label_font);
+
+      // get rect around label so we can draw it ourselves, because
+      // the DrawText() one is lame
+
       GetTextExtentPoint32(hdc, name, strlen(name), &size);
       z.left = rect.left+1;
       z.bottom = rect.bottom+1;
@@ -544,7 +647,7 @@ void display(HWND win, HDC hdc)
       z.right = z.left + size.cx + 10;
 
       FillRect(hdc, &z, b);
-      z.bottom -= 2;
+      z.bottom -= 2; // extra padding on bottom because it's at edge of window
       SetTextColor(hdc, RGB(255,255,255));
       DrawText(hdc, name, -1, &z, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
       if (old) SelectObject(hdc, old);
@@ -553,15 +656,24 @@ void display(HWND win, HDC hdc)
    if (show_help) {
       int h2;
       RECT box = rect;
+      // measure height of longest text
       DrawText(hdc, helptext_left, -1, &box, DT_CALCRECT);
       h2 = box.bottom - box.top;
+      // build rect of correct height
       box = rect;
-      box.left -= 200; box.right += 200;
       box.top = stb_max((h - h2) >> 1, 0);
       box.bottom = box.top + h2;
+      // expand on left & right so following code is well behaved
+      box.left -= 200; box.right += 200;
+
+      // draw center text
       draw_nice(hdc, helptext_center, &box, DT_CENTER);
+
+      // displace box to left and draw left column
       box.left -= 150; box.right -= 150;
       draw_nice(hdc, helptext_left, &box, DT_CENTER);
+
+      // displace box to right and draw right column
       box.left += 300; box.right += 300;
       draw_nice(hdc, helptext_right, &box, DT_CENTER);
    }
@@ -572,8 +684,12 @@ typedef struct
    int x,y;
    int w,h;
 } queued_size;
+
+// most recent unsatisfied resize request (private to main thread)
 queued_size qs;
 
+// active resize request, mainly just used by main thread (resize
+// thread writes to 'image' field.
 struct
 {
    queued_size size;
@@ -581,6 +697,7 @@ struct
    char *filename;
 } pending_resize;
 
+// temporary structure for communicating across stb_workq() call
 typedef struct
 {
    ImageFile *src;
@@ -588,8 +705,10 @@ typedef struct
    Image *result;
 } Resize;
 
-Resize res;
+// threaded image resizer, uses work queue AND current thread
+static void image_resize(Image *dest, Image *src, ImageFile *cache);
 
+// wrapper for image_resize() to be called via work queue
 void * work_resize(void *p)
 {
    Resize *r = (Resize *) p;
@@ -597,14 +716,21 @@ void * work_resize(void *p)
    return r->result;
 }
 
+// dedicate workqueue workers for resizing
 stb_workqueue *resize_workers;
 
+// compute the size to resize an image to given a target window (gw,gh);
+// we assume the input window (sw,wh) has already been expanded by its
+// frame size.
 void compute_size(int gw, int gh, int sw, int sh, int *ox, int *oy)
 {
+   // shrink the target by the padding (the size of the frame)
    gw -= FRAME*2;
    gh -= FRAME*2;
+   // shrink the source to remove the frame
    sw -= FRAME*2;
    sh -= FRAME*2;
+   // compute the raw pixel resize
    if (gw*sh > gh*sw) {
       *oy = gh;
       *ox = gh * sw/sh;
@@ -614,8 +740,13 @@ void compute_size(int gw, int gh, int sw, int sh, int *ox, int *oy)
    }
 }
 
+// resize an image. if immediate=TRUE, we run it from the main thread
+// and won't return until it's resized; if !immediate, we hand it to
+// a workqueue and return before it's done. (note that if immediate=TRUE,
+// we still use the work queue to accelerate, if possible)
 void queue_resize(int w, int h, ImageFile *src_c, int immediate)
 {
+   static Resize res; // must be static because we expose (very briefly) to other thread
    Image *src = src_c->image;
    Image *dest;
    int w2,h2;
@@ -624,44 +755,49 @@ void queue_resize(int w, int h, ImageFile *src_c, int immediate)
    if (src_c == NULL) return;
 
    // create (w2,h2) matching aspect ratio of w/h
-   w -= FRAME*2;
-   h -= FRAME*2;
-   if (w*src->y > h*src->x) {
-      h2 = h;
-      w2 = h2 * src->x / src->y;
-   } else {
-      w2 = w;
-      h2 = w2 * src->y / src->x;
-   }
-   assert(w2 >= 0 && h2 >= 0);
-   dest = bmp_alloc(w2+FRAME*2,h2+FRAME*2);   assert(dest);
+   compute_size(w,h,src->x+FRAME*2,src->y+FRAME*2,&w2,&h2);
+
+   // create output of the appropriate size
+   dest = bmp_alloc(w2+FRAME*2,h2+FRAME*2);
+   assert(dest);
+   if (!dest) return;
+
+   // encode the border around it
    frame(dest);
 
+   // build the parameter list for image_resize
    res.src = src_c;
    res.dest = image_region(dest, FRAME, FRAME, w2, h2);
    res.result = dest;
 
    if (!immediate) {
+      // update status to be owned by the resizer (which isn't running yet,
+      // so there's no thread issues here)
       src_c->status = LOAD_resizing;
+      // store data to come back for later
       pending_resize.image = NULL;
       pending_resize.filename = strdup(src_c->filename);
+      // run the resizer in the background (equivalent to the call below)
       stb_workq(resize_workers, work_resize, &res, &pending_resize.image);
    } else {
-      image_resize(&res.dest, src, NULL);
-      pending_resize.image = res.result;
-      res.result = NULL;
+      // run the resizer in the main thread
+      pending_resize.image = work_resize(&res);
    }
 }
 
+// put a resize request in the "queue" (which is only one deep)
 void enqueue_resize(int left, int top, int width, int height)
 {
    if (cur && ((width == cur->x && height >= cur->y) || (height == cur->y && width >= cur->x))) {
-      // no resize necessary, just a variant of the current shape
+      // if we have a current image, and that image can satisfy the request (they're
+      // dragging one side of the image out wider), just immediately update the window
+      qs.w = 0; // clear the queue
       if (!show_frame)
          left += FRAME, top += FRAME, width -= 2*FRAME, height -= 2*FRAME;
       MoveWindow(win, left, top, width, height, TRUE);
       InvalidateRect(win, NULL, FALSE);
    } else {
+      // otherwise store the most recent request for processing in the main thread
       qs.x = left;
       qs.y = top;
       qs.w = width;
@@ -681,7 +817,7 @@ void GetAdjustedWindowRect(HWND win, RECT *rect)
    }
 }
 
-
+// compute the size we'd prefer this window to be at
 void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y);
 
 enum
@@ -1239,6 +1375,10 @@ void mouse(UINT ev, int x, int y)
 
 int best_lru = 0;
 
+int downsample_cubic = 0;
+int upsample_cubic = 1;
+
+
 int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
    switch (uMsg) {
@@ -1318,7 +1458,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       }
       case WM_PAINT: {
          PAINTSTRUCT ps;
-         hDC = BeginPaint(hWnd, &ps);
+         HDC hDC = BeginPaint(hWnd, &ps);
          display(hWnd, hDC);
          EndPaint(hWnd, &ps);
          return 0;
@@ -1396,6 +1536,11 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                if (cur) frame(cur);
                break;
 
+            case 'C':
+               upsample_cubic = !upsample_cubic;
+               downsample_cubic = !downsample_cubic;
+               break;
+
             case MY_CTRL | VK_OEM_PLUS:
             case MY_CTRL | MY_SHIFT | VK_OEM_PLUS:
                resize(1);
@@ -1439,25 +1584,29 @@ void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
    int cy2 = GetSystemMetrics(SM_CYSCREEN);
 
    if (w <= cx2 && h <= cy2) {
+      // if the image fits on the primary monitor, go for it
       *w_ideal = w;
       *h_ideal = h;
    } else if (w - FRAME*2 <= cx2 && h - FRAME*2 <= cy2) {
+      // if the image fits on the primary monitor with border
       *w_ideal = w;
       *h_ideal = h;
    } else {
-      // will we show more if we use the full desktop?
+      // will we show more if we use the virtual desktop, rather than just the primary?
       int w1,h1,w2,h2;
-      compute_size(cx ,cy ,w,h,&w1,&h1);
-      compute_size(cx2,cy2,w,h,&w2,&h2);
+      compute_size(cx+FRAME*2 ,cy+FRAME*2,w,h,&w1,&h1);
+      compute_size(cx2+FRAME*2,cy2+FRAME*2,w,h,&w2,&h2);
       if (h1 > h2*1.25 || w1 > w2*1.25) {
-         *w_ideal = stb_min(cx,w1);
-         *h_ideal = stb_min(cy,h1);
+         *w_ideal = stb_min(cx,w1)+FRAME*2;
+         *h_ideal = stb_min(cy,h1)+FRAME*2;
       } else {
-         *w_ideal = stb_min(cx2,w2);
-         *h_ideal = stb_min(cy2,h2);
+         *w_ideal = stb_min(cx2,w2)+FRAME*2;
+         *h_ideal = stb_min(cy2,h2)+FRAME*2;
       }
       // compute actual size image will be
       compute_size(*w_ideal, *h_ideal, w,h, &w,&h);
+      w += FRAME*2;
+      h += FRAME*2;
    }
 
    if ((cx != cx2 || cy != cy2) && w <= cx2+FRAME*2 && h <= cy2+FRAME*2) {
@@ -1496,7 +1645,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    do_debug = IsDebuggerPresent();
    #endif
 
-   hInst = hInstance;
    GlobalMemoryStatus(&mem);
    physmem = mem.dwTotalPhys;
    max_cache_bytes = physmem / 6;
@@ -1648,6 +1796,7 @@ o(("Enqueueing resize\n"));
             if (!pending_resize.image) {
                Sleep(10);
             } else {
+               HDC hdc;
 o(("Finished resize\n"));
                imfree(cur);
                cur = pending_resize.image;
@@ -1663,7 +1812,9 @@ o(("Finished resize\n"));
                SetWindowPos(hWnd,NULL,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, SWP_NOZORDER);
                barrier();
                pending_resize.size.w = 0;
-               display(hWnd, hDC);
+               hdc = GetDC(win);
+               display(hWnd, hdc);
+               ReleaseDC(win, hdc);
             }
             continue;
          }
@@ -1791,7 +1942,281 @@ void *image_resize_work(ImageProcess *q)
    return NULL;
 }
 
-volatile reentry;
+
+//
+
+#undef R
+#undef G
+#undef B
+#undef A
+#undef RGB
+#undef RGBA
+
+#define R(x) ( (x)        & 0xff)
+#define G(x) (((x) >>  8) & 0xff)
+#define B(x) (((x) >> 16) & 0xff)
+#define A(x) (((x) >> 24) & 0xff)
+#define RGBA(r,g,b,a) (((a) << 24) + ((b) << 16) + ((g) << 8) + (r))
+#define RGB(r,g,b)    RGBA(r,g,b,0)
+
+typedef uint32 Color;
+
+// lerp() is just blend() that also "blends" alpha
+// put a/256 of src over dest, including alpha
+// again, cannot be used for a=256
+static Color lerp(Color dest, Color src, uint8 a)
+{
+   int rb_src  = src  & 0xff00ff;
+   int rb_dest = dest & 0xff00ff;
+   int rb      = rb_dest + ((rb_src - rb_dest) * a >> 8);
+   int ga_src  = (src  & 0xff00ff00) >> 8;
+   int ga_dest = (dest & 0xff00ff00) >> 8;
+   int ga      = (ga_dest<<8) + (ga_src - ga_dest) * a;
+   return (rb & 0xff00ff) + (ga & 0xff00ff00);
+}
+
+static int cubic(int x0, int x1, int x2, int x3, int lerp8)
+{
+   int a = 3*(x1-x2) + (x3-x0);
+   int d = x1+x1;
+   int c = x2 - x0;
+   int b = -a-d + x0+x2;
+
+   int res = a * lerp8 + (b << 8);
+   res = (res * lerp8);
+   res = ((res >> 16) + c) * lerp8;
+   res = ((res >> 8) + d) >> 1;
+   if (res < 0) res = 0; else if (res > 255) res = 255;
+   return res;
+}
+
+static Color cubicRGBA(Color x0, Color x1, Color x2, Color x3, int lerp8)
+{
+   int r,g,b,a;
+   r = cubic(R(x0),R(x1),R(x2),R(x3),lerp8);
+   g = cubic(G(x0),G(x1),G(x2),G(x3),lerp8);
+   b = cubic(B(x0),B(x1),B(x2),B(x3),lerp8);
+   a = cubic(A(x0),A(x1),A(x2),A(x3),lerp8);
+   return RGBA(r,g,b,a);
+}
+
+Image *grCubicScaleBitmapX(Image *src, int out_w)
+{
+   int x,dx,i,j;
+   Image *out = bmp_alloc(out_w, src->y);
+   dx = (src->x-1)*65536 / (out_w-1);
+   for (j=0; j < out->y; ++j) {
+      uint32 *data = (uint32 *) (src->pixels + j*src->stride);
+      uint32 *dest = (uint32 *) (out->pixels + j*out->stride);
+      x = 0;
+      for (i=0; i < out_w; ++i) {
+         int xp = (x >> 16);
+         int xw = (x >> 8) & 255;
+         if (xp == 0)
+            dest[i] = cubicRGBA(data[xp],data[xp],data[xp+1],data[xp+2], xw);
+         else if (xp >= src->x - 2)
+            if (xp == src->x-1)
+               dest[i] = data[xp];
+            else
+               dest[i] = cubicRGBA(data[xp-1], data[xp], data[xp+1], data[xp+1], xw);
+         else
+            dest[i] = cubicRGBA(data[xp-1], data[xp], data[xp+1], data[xp+2], xw);
+
+         x += dx;
+      }
+   }
+   return out;
+}
+
+#define PLUS(x,y)   ((uint32 *) ((uint8 *) (x) + (y)))
+
+Image *grCubicScaleBitmapY(Image *src, int out_h)
+{
+   int y,dy,i,j;
+   Image *out = bmp_alloc(src->x, out_h);
+   dy = ((src->y-1)*65536-1) / (out_h-1);
+   y = 0;
+   for (j=0; j < out_h; ++j,y+=dy) {
+      int yp = (y >> 16);
+      uint8 yw = (y >> 8);
+      uint32 *data1 = (uint32 *) (src->pixels + yp*src->stride);
+      uint32 *data2 = PLUS(data1,src->stride);
+      uint32 *dest  = (uint32 *) (out->pixels + j*out->stride);
+      uint32 *data0 = (yp > 0) ? PLUS(data1, - src->stride) : data1;
+      uint32 *data3 = (yp < src->y-2) ? PLUS(data2, src->stride) : data2;
+      for (i=0; i < out->x; ++i) {
+         dest[i] = cubicRGBA(data0[i], data1[i], data2[i], data3[i], yw);
+      }
+   }
+   return out;
+}
+
+
+Image *grScaleBitmapX(Image *src, int out_w)
+{
+   int x,dx,i,j;
+   Image *out = bmp_alloc(out_w, src->y);
+   dx = (src->x-1)*65536 / (out_w-1);
+   for (j=0; j < out->y; ++j) {
+      uint32 *data = (uint32*)(src->pixels + j*src->stride);
+      uint32 *dest = (uint32*)(out->pixels + j*out->stride);
+      x = 0;
+      for (i=0; i < out_w; ++i) {
+         int xp = (x >> 16);
+         int xw = (x >> 8) & 255;
+         dest[i] = lerp(data[xp], data[xp+1], xw);
+         x += dx;
+      }
+   }
+   return out;
+}
+
+Image *grScaleBitmapY(Image *src, int out_h)
+{
+   int y,dy,i,j;
+   Image *out = bmp_alloc(src->x, out_h);
+   dy = ((src->y-1)*65536-1) / (out_h-1);
+   y = 0;
+   for (j=0; j < out_h; ++j,y+=dy) {
+      int yp = (y >> 16);
+      uint8 yw = (y >> 8);
+      uint32 *data1 = (uint32*)(src->pixels + yp*src->stride);
+      uint32 *data2 = PLUS(data1, src->stride);
+      uint32 *dest  = (uint32*)(out->pixels + j*out->stride);
+      for (i=0; i < out->x; ++i) {
+         dest[i] = lerp(data1[i], data2[i], yw);
+      }
+   }
+   return out;
+}
+
+// downsampling
+Image *grScaleBitmapOneHalf(Image *src)
+{
+   int i,j, w,h;
+   Image *res;
+
+   w = src->x>>1;
+   h = src->y>>1;
+
+   res = bmp_alloc(w,h);
+   for (j=0; j < h; j += 1) {
+      Color *src0 = (uint32*)(src->pixels + 2*j * src->stride);
+      Color *src1 = PLUS(src0, src->stride);
+      for (i=0; i < w; i += 1) {
+         Color *dest = (uint32*)(res->pixels + j * res->stride + i*BPP);
+         // this will cause quantization of flat-colored regions, thus can
+         // cause banding in very slow gradients
+         *dest = ((src0[0] >> 2) & 0x3f3f3f3f) +
+                 ((src0[1] >> 2) & 0x3f3f3f3f) +
+                 ((src1[0] >> 2) & 0x3f3f3f3f) +
+                 ((src1[1] >> 2) & 0x3f3f3f3f);
+         src0 += 2;
+         src1 += 2;
+      }
+   }
+
+   return res;
+}
+
+Image *grScaleBitmapTwoThirds(Image *src)
+{
+   int i,j, w,h;
+   Image *res;
+
+   w = src->x/3 * 2;
+   h = src->y/3 * 2;
+
+   res = bmp_alloc(w, h);
+   for (j=0; j+1 < h; j += 2) {
+      Color *src0 = (uint32*)(src->pixels + 3*(j>>1) * src->stride);
+      Color *src1 = PLUS(src0, src->stride);
+      Color *src2 = PLUS(src1, src->stride);
+      // use (2/3,1/3) and (1/3,2/3), which amounts to:
+      //    A B C     W  X
+      //    D E F  -> 
+      //    G H I     Y  Z
+
+      // W = A*4/9 + B * 2/9 + D * 2/9 + E * 1/9
+      // for speed, approximate as A*3/8 + B*2/8 + D*2/8 + E*1/8
+      for (i=0; i+1 < w; i += 2) {
+         Color *dest = (uint32*)(res->pixels + j * res->stride + i*BPP);
+         dest[0] = ((src0[0] >> 1) & 0x7f7f7f7f) - ((src0[0] >> 3) & 0x1f1f1f1f)
+                 + ((src0[1] >> 2) & 0x3f3f3f3f) + ((src1[0] >> 2) & 0x3f3f3f3f)
+                 + ((src1[1] >> 3) & 0x1f1f1f1f);
+         dest[1] = ((src0[2] >> 1) & 0x7f7f7f7f) - ((src0[2] >> 3) & 0x1f1f1f1f)
+                 + ((src0[1] >> 2) & 0x3f3f3f3f) + ((src1[2] >> 2) & 0x3f3f3f3f)
+                 + ((src1[1] >> 3) & 0x1f1f1f1f);
+         dest = PLUS(dest,res->stride);
+         dest[0] = ((src2[0] >> 1) & 0x7f7f7f7f) - ((src2[0] >> 3) & 0x1f1f1f1f)
+                 + ((src2[1] >> 2) & 0x3f3f3f3f) + ((src1[0] >> 2) & 0x3f3f3f3f)
+                 + ((src1[1] >> 3) & 0x1f1f1f1f);
+         dest[1] = ((src2[2] >> 1) & 0x7f7f7f7f) - ((src2[2] >> 3) & 0x1f1f1f1f)
+                 + ((src2[1] >> 2) & 0x3f3f3f3f) + ((src1[2] >> 2) & 0x3f3f3f3f)
+                 + ((src1[1] >> 3) & 0x1f1f1f1f);
+         src0 += 3;
+         src1 += 3;
+         src2 += 3;         
+      }
+   }
+
+   return res;
+}
+
+Image *grScaleBitmap(Image *src, int gx, int gy)
+{
+   Image *to_free, *res;
+   to_free = NULL;
+
+   // if scaling up, just always use bicubic
+   if ((gx > src->x || gy > src->y) && upsample_cubic) {
+      res = grCubicScaleBitmapY(src, gy);
+      to_free = res;
+      res = grCubicScaleBitmapX(res, gx);
+      imfree(to_free);
+      return res;
+   }
+
+   while (gx <= (src->x >> 1) && gy <= (src->y >> 1)) {
+      src = grScaleBitmapOneHalf(src);
+      if (to_free) imfree(to_free);
+      to_free = src;
+   }
+
+   #if 1
+   if (gx < src->x * 0.666666f && gy < src->y * 0.666666f) {
+      src = grScaleBitmapTwoThirds(src);
+      if (to_free) imfree(to_free);
+      to_free = src;
+   }
+   #endif
+
+   if (gx == src->x && gy == src->y) {
+      if (to_free)
+         res = src;
+      else {
+         res = bmp_alloc(src->x, src->y);
+         memcpy(res->pixels, src->pixels, res->y * res->stride);
+         return res;
+      }
+   } else if (!downsample_cubic) {
+      res = grScaleBitmapX(src, gx);
+      if (to_free) imfree(to_free);
+      to_free = res;
+      res = grScaleBitmapY(res, gy);
+      imfree(to_free);
+   } else {
+      res = grCubicScaleBitmapY(src, gy);
+      if (to_free) imfree(to_free);
+      to_free = res;
+      res = grCubicScaleBitmapX(res, gx);
+      imfree(to_free);
+   }
+   return res;
+}
+
+
+#if BPP==3
 void image_resize(Image *dest, Image *src, ImageFile *src_c)
 {
    ImageProcess proc_buffer[16], *q = stb_temp(proc_buffer, resize_threads * sizeof(*q));
@@ -1800,7 +2225,6 @@ void image_resize(Image *dest, Image *src, ImageFile *src_c)
    float x,dx,dy;
    assert(reentry == 0);
    assert(src->frame == 0);
-   ++reentry;
    dx = (float) (src->x - 1) / (dest->x - 1);
    dy = (float) (src->y - 1) / (dest->y - 1);
    x=0;
@@ -1851,8 +2275,18 @@ void image_resize(Image *dest, Image *src, ImageFile *src_c)
       }
    }
 
-   if(src_c) src_c->status = LOAD_available;
    stb_tempfree(point_buffer, p);
    stb_tempfree(proc_buffer , q);
-   --reentry;
 }
+#else
+void image_resize(Image *dest, Image *src, ImageFile *src_c)
+{
+   int j;
+   Image *temp;
+   temp = grScaleBitmap(src, dest->x, dest->y);
+   for (j=0; j < dest->y; ++j)
+      memcpy(dest->pixels + j*dest->stride, temp->pixels + j*temp->stride, BPP*dest->x);
+   imfree(temp);
+   if(src_c) src_c->status = LOAD_available;
+}
+#endif
