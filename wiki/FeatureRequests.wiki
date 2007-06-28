@@ -6,6 +6,8 @@ Check the Open and Closed issues to make sure it hasn't already been
 requested. If not, go ahead and create a new issue. Don't worry about
 the fact that it will be called a 'defect' by default.
 
+Potential developers should also read this: RejectedRequestExample
+
 = Information for Users =
 
 *stb(imv)* is an image viewing program. Unless someone has an
