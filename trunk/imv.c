@@ -41,6 +41,8 @@
 // trivial error handling
 void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
+#define _DEBUG
+
 // OutputDebugString with varargs, can be compiled out
 #ifdef _DEBUG
 int do_debug;
@@ -695,6 +697,7 @@ struct
    queued_size size;
    Image *image;
    char *filename;
+   ImageFile *image_c;
 } pending_resize;
 
 // temporary structure for communicating across stb_workq() call
@@ -706,13 +709,13 @@ typedef struct
 } Resize;
 
 // threaded image resizer, uses work queue AND current thread
-static void image_resize(Image *dest, Image *src, ImageFile *cache);
+static void image_resize(Image *dest, Image *src);
 
 // wrapper for image_resize() to be called via work queue
 void * work_resize(void *p)
 {
    Resize *r = (Resize *) p;
-   image_resize(&r->dest, r->src->image, r->src);
+   image_resize(&r->dest, r->src->image);
    return r->result;
 }
 
@@ -776,6 +779,7 @@ void queue_resize(int w, int h, ImageFile *src_c, int immediate)
       src_c->status = LOAD_resizing;
       // store data to come back for later
       pending_resize.image = NULL;
+      pending_resize.image_c = src_c;
       pending_resize.filename = strdup(src_c->filename);
       // run the resizer in the background (equivalent to the call below)
       stb_workq(resize_workers, work_resize, &res, &pending_resize.image);
@@ -1075,6 +1079,8 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
          // it's being loaded/decoded
          return;
       }
+      if (z->status == LOAD_reading_done)
+         return;
       if (z->status == LOAD_available) {
          if (make_current)
             update_source((ImageFile *) z);
@@ -1777,14 +1783,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    for(;;) {
       // if we're not currently resizing, start a resize
       if (qs.w && pending_resize.size.w == 0) {
-         if (cur_is_current() && (!cur || (qs.w == cur->x && qs.h >= cur->y) || (qs.h == cur->y && qs.w >= cur->x))) {
-            // no resize necessary, just a variant of the current shape
-            MoveWindow(win, qs.x,qs.y,qs.w,qs.h, TRUE);
-            InvalidateRect(win, NULL, FALSE);
-         } else {
-o(("Enqueueing resize\n"));
-            pending_resize.size = qs;
-            queue_resize(qs.w, qs.h, source_c, FALSE);
+         if (source) {
+            if (cur_is_current() && (!cur || (qs.w == cur->x && qs.h >= cur->y) || (qs.h == cur->y && qs.w >= cur->x))) {
+               // no resize necessary, just a variant of the current shape
+               MoveWindow(win, qs.x,qs.y,qs.w,qs.h, TRUE);
+               InvalidateRect(win, NULL, FALSE);
+            } else {
+               o(("Enqueueing resize\n"));
+               pending_resize.size = qs;
+               queue_resize(qs.w, qs.h, source_c, FALSE);
+            }
          }
          qs.w = 0;
       }
@@ -1797,8 +1805,9 @@ o(("Enqueueing resize\n"));
                Sleep(10);
             } else {
                HDC hdc;
-o(("Finished resize\n"));
+               o(("Finished resize\n"));
                imfree(cur);
+               pending_resize.image_c->status = LOAD_available;
                cur = pending_resize.image;
                display_error[0] = 0;
                cur_filename = pending_resize.filename;
@@ -1847,7 +1856,6 @@ typedef struct
    double temp;
    Image *dest;
    Image *src;
-   ImageFile *src_c;
    SplitPoint *p;
    int j0,j1;
    float dy;
@@ -1942,6 +1950,65 @@ void *image_resize_work(ImageProcess *q)
    return NULL;
 }
 
+void image_resize_old(Image *dest, Image *src)
+{
+   ImageProcess proc_buffer[16], *q = stb_temp(proc_buffer, resize_threads * sizeof(*q));
+   SplitPoint *p = stb_temp(point_buffer, dest->x * sizeof(*p));
+   int i,j0,j1,k;
+   float x,dx,dy;
+   assert(src->frame == 0);
+   dx = (float) (src->x - 1) / (dest->x - 1);
+   dy = (float) (src->y - 1) / (dest->y - 1);
+   x=0;
+   for (i=0; i < dest->x; ++i) {
+      p[i].i = (int) floor(x);
+      p[i].f = (int) floor(255.9f*(x - p[i].i));
+      if (p[i].i >= src->x-1) {
+         p[i].i = src->x-2;
+         p[i].f = 255;
+      }
+      x += dx;
+      p[i].i *= BPP;
+   }
+   for (k=0; k < dest->x; k += CACHE_REBLOCK) {
+      int k2 = stb_min(k+CACHE_REBLOCK, dest->x);
+      for (i=k2-1; i > k; --i) {
+         p[i].i -= p[i-1].i;
+      }
+   }
+   j0 = 0;
+   for (i=0; i < resize_threads; ++i) {
+      j1 = dest->y * (i+1) / resize_threads;
+      q[i].dest = dest;
+      q[i].src = src;
+      q[i].j0 = j0;
+      q[i].j1 = j1;
+      q[i].dy = dy;
+      q[i].p = p;
+      q[i].done = FALSE;
+      j1 = j0;
+   }
+
+   if (resize_threads == 1) {
+      image_resize_work(q);
+   } else {
+      barrier();
+      for (i=1; i < resize_threads; ++i)
+         stb_workq(resize_workers, image_resize_work, q+i, NULL);
+      image_resize_work(q);
+
+      for(;;) {
+         for (i=1; i < resize_threads; ++i)
+            if (!q[i].done)
+               break;
+         if (i == resize_threads) break;
+         Sleep(10);
+      }
+   }
+
+   stb_tempfree(point_buffer, p);
+   stb_tempfree(proc_buffer , q);
+}
 
 //
 
@@ -1990,63 +2057,195 @@ static int cubic(int x0, int x1, int x2, int x3, int lerp8)
    return res;
 }
 
-static Color cubicRGBA(Color x0, Color x1, Color x2, Color x3, int lerp8)
+#if 1
+
+
+#define SSE __declspec(align(16))
+#define MMX __declspec(align(8))
+
+//   out = a * t^3 + b*t^2 + c*t + d
+//   out = (a*t+b)*t^2 + (c*t+d)*1
+
+MMX int16 three[4] = { 3,3,3,3 };
+
+static void cubicRGBA(uint32 *dest, uint32 *x0, uint32 *x1, uint32 *x2, uint32 *x3, int lerp8, int step_dest, int step_src, int len)
+//static uint32 cubicRGBA(uint32 x0, uint32 x1, uint32 x2, uint32 x3, int lerp8)
 {
-   int r,g,b,a;
-   r = cubic(R(x0),R(x1),R(x2),R(x3),lerp8);
-   g = cubic(G(x0),G(x1),G(x2),G(x3),lerp8);
-   b = cubic(B(x0),B(x1),B(x2),B(x3),lerp8);
-   a = cubic(A(x0),A(x1),A(x2),A(x3),lerp8);
-   return RGBA(r,g,b,a);
+   if (len <= 0) return;
+   __asm {
+      // these save/restores shouldn't be necessary... but they seem to be in VC6 opt builds
+      push eax
+      push ebx
+      push ecx
+      push edx
+      push esi
+      push edi
+      mov   edi,dest
+      mov   eax,x0
+      mov   ebx,x1
+      mov   ecx,x2
+      mov   edx,x3
+      pxor  mm0,mm0
+      movd  mm7,lerp8
+      mov   esi,len
+      punpcklbw mm7,mm7   // 0,0,0,0,0,0,lerp,lerp
+      punpcklbw mm7,mm7   // 0,0,0,0,lerp,lerp,lerp,lerp
+      punpcklbw mm7,mm7   // 8xlerp. (This meakes each unsigned lerp value 0..15)
+      psrlw     mm7,1     // slide away from the sign bit; 1.15 lerp
+   } looptop: __asm {
+
+      movd  mm1,[eax]
+      movd  mm2,[ebx]
+      movd  mm3,[ecx]
+      movd  mm4,[edx]
+      punpcklbw mm1,mm0   // mm1 = x0
+      punpcklbw mm2,mm0   // mm2 = x1
+      punpcklbw mm3,mm0   // mm3 = x2
+      punpcklbw mm4,mm0   // mm4 = x3
+#if 1
+      psubw     mm4,mm1   // mm4 = x3-x0
+      movq      mm5,mm2   // mm5 = x1
+      psubw     mm5,mm3   // mm5 = x1-x2
+      pmullw    mm5,three // mm5 = 3*(x1-x2)
+      paddw     mm5,mm4   // mm5 = a
+      paddw     mm2,mm2   // mm2 = d
+      movq      mm6,mm3   // mm6 = x2
+      psubw     mm6,mm1   // mm6 = c
+      paddw     mm3,mm1   // mm3 = x0+x2
+      psubw     mm3,mm2   // mm3 = x0+x2-d
+      psubw     mm3,mm5   // mm3 = b
+      psllw     mm5,3     // mm5 = a(15.1)
+      pmulhw    mm5,mm7   // mm5 = a
+      pmulhw    mm5,mm7   // mm5 = a
+      pmulhw    mm5,mm7   // mm5 = a*t^3
+      psllw     mm3,2     // mm3 = b
+      pmulhw    mm3,mm7   // mm3 = b
+      pmulhw    mm3,mm7   // mm3 = b*t^2
+      psllw     mm6,1     // mm6 = c
+      pmulhw    mm6,mm7   // mm6 = c*t
+      paddw     mm5,mm2
+      paddw     mm5,mm3
+      paddw     mm5,mm6
+      psraw     mm5,1
+      packuswb  mm5,mm5
+      movd      [edi],mm5
+#else
+      // unknown spline type from: http://local.wasp.uwa.edu.au/~pbourke/other/interpolation/
+      psubw     mm4,mm3   // mm4 = x3-x2
+      psubw     mm4,mm1   // mm4 = x3-x2-x0
+      paddw     mm4,mm2   // mm4 = a0 = x3-x2-x0+x1
+      psubw     mm3,mm1   // mm3 = a2 = x2-x0
+      psubw     mm1,mm2   // mm1 = x0-x1
+      psubw     mm1,mm4   // mm1 = a1 = x0-x1-a0
+      // mm2 = a3 = y1
+      psllw     mm4,3
+      pmulhw    mm4,mm7
+      pmulhw    mm4,mm7
+      pmulhw    mm4,mm7
+      psllw     mm1,2
+      pmulhw    mm1,mm7
+      pmulhw    mm1,mm7
+      psllw     mm3,1
+      pmulhw    mm3,mm7
+      paddw     mm1,mm2
+      paddw     mm1,mm3
+      paddw     mm1,mm4
+      packuswb  mm1,mm1
+      movd      [edi],mm1
+#endif
+      add       eax,step_src
+      add       ebx,step_src
+      add       ecx,step_src
+      add       edx,step_src
+      add       edi,step_dest
+      dec       esi
+      jnz       looptop
+      emms
+      pop edi
+      pop esi
+      pop edx
+      pop ecx
+      pop ebx
+      pop eax
+   }
 }
 
+#else
+static void cubicRGBA(Color *dest, Color *x0, Color *x1, Color *x2, Color *x3, int lerp8, int step_dest, int step_src, int len)
+{
+   int i;
+   for (i=0; i < len; ++i) {
+      int r,g,b,a;
+      r = cubic(R(*x0),R(*x1),R(*x2),R(*x3),lerp8);
+      g = cubic(G(*x0),G(*x1),G(*x2),G(*x3),lerp8);
+      b = cubic(B(*x0),B(*x1),B(*x2),B(*x3),lerp8);
+      a = cubic(A(*x0),A(*x1),A(*x2),A(*x3),lerp8);
+      *dest = RGBA(r,g,b,a);
+      x0 += step_src>>2;
+      x1 += step_src>>2;
+      x2 += step_src>>2;
+      x3 += step_src>>2;
+      dest += step_dest>>2;
+   }
+}
+#endif
+
+#define PLUS(x,y)   ((uint32 *) ((uint8 *) (x) + (y)))
+
+#define CUBIC_BLOCK  32
+Image *tot;
 Image *grCubicScaleBitmapX(Image *src, int out_w)
 {
-   int x,dx,i,j;
+   int x,dx,i,j,k;
    Image *out = bmp_alloc(out_w, src->y);
+   //tot = out;
+   if ((uint) out - 0x1000 >= 0x8000000) __asm int 3;
    dx = (src->x-1)*65536 / (out_w-1);
-   for (j=0; j < out->y; ++j) {
-      uint32 *data = (uint32 *) (src->pixels + j*src->stride);
-      uint32 *dest = (uint32 *) (out->pixels + j*out->stride);
+   for (k=0; k < out->y; k += CUBIC_BLOCK) {
+      int k2 = stb_min(k+CUBIC_BLOCK, out->y);
       x = 0;
       for (i=0; i < out_w; ++i) {
+         uint32 *data = (uint32 *) (src->pixels + k*src->stride);
+         uint32 *dest = (uint32 *) (out->pixels + k*out->stride) + i;
          int xp = (x >> 16);
          int xw = (x >> 8) & 255;
-         if (xp == 0)
-            dest[i] = cubicRGBA(data[xp],data[xp],data[xp+1],data[xp+2], xw);
-         else if (xp >= src->x - 2)
-            if (xp == src->x-1)
-               dest[i] = data[xp];
-            else
-               dest[i] = cubicRGBA(data[xp-1], data[xp], data[xp+1], data[xp+1], xw);
-         else
-            dest[i] = cubicRGBA(data[xp-1], data[xp], data[xp+1], data[xp+2], xw);
-
+   if ((uint) dest - 0x1000 >= 0x8000000) __asm int 3;
+         if (xp == 0) {
+            cubicRGBA(dest, data+xp,data+xp,data+xp+1,data+xp+2,xw,out->stride,src->stride,k2-k);
+         } else if (xp >= src->x - 2) {
+            if (xp == src->x-1) {
+               for (j=k; j < k2; ++j) {
+                  dest[0] = data[xp];
+                  data = PLUS(data, src->stride);
+                  dest = PLUS(dest , out->stride);
+               }
+            } else {
+               cubicRGBA(dest, data+xp-1,data+xp,data+xp+1,data+xp+1,xw,out->stride,src->stride,k2-k);
+            }
+         } else {
+            cubicRGBA(dest, data+xp-1,data+xp,data+xp+1,data+xp+2,xw,out->stride,src->stride,k2-k);
+         }
          x += dx;
       }
    }
    return out;
 }
 
-#define PLUS(x,y)   ((uint32 *) ((uint8 *) (x) + (y)))
-
 Image *grCubicScaleBitmapY(Image *src, int out_h)
 {
-   int y,dy,i,j;
+   int y,dy,j;
    Image *out = bmp_alloc(src->x, out_h);
    dy = ((src->y-1)*65536-1) / (out_h-1);
    y = 0;
    for (j=0; j < out_h; ++j,y+=dy) {
+      uint32 *dest  = (uint32 *) (out->pixels + j*out->stride);
       int yp = (y >> 16);
       uint8 yw = (y >> 8);
       uint32 *data1 = (uint32 *) (src->pixels + yp*src->stride);
       uint32 *data2 = PLUS(data1,src->stride);
-      uint32 *dest  = (uint32 *) (out->pixels + j*out->stride);
       uint32 *data0 = (yp > 0) ? PLUS(data1, - src->stride) : data1;
       uint32 *data3 = (yp < src->y-2) ? PLUS(data2, src->stride) : data2;
-      for (i=0; i < out->x; ++i) {
-         dest[i] = cubicRGBA(data0[i], data1[i], data2[i], data3[i], yw);
-      }
+      cubicRGBA(dest, data0, data1, data2, data3, yw, 4,4,out->x);
    }
    return out;
 }
@@ -2163,33 +2362,37 @@ Image *grScaleBitmapTwoThirds(Image *src)
    return res;
 }
 
-Image *grScaleBitmap(Image *src, int gx, int gy)
+Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
 {
    Image *to_free, *res;
+   int upsample=FALSE;
    to_free = NULL;
 
-   // if scaling up, just always use bicubic
-   if ((gx > src->x || gy > src->y) && upsample_cubic) {
+   // check if we're scaling up
+   if (gx > src->x || gy > src->y)  {
+      upsample = TRUE;
+      #if 0
       res = grCubicScaleBitmapY(src, gy);
       to_free = res;
       res = grCubicScaleBitmapX(res, gx);
       imfree(to_free);
       return res;
-   }
+      #endif
+   } else {
+      // maybe should do something smarter here, like find the
+      // nearest box size, instead of repetitive powers of two
+      while (gx <= (src->x >> 1) && gy <= (src->y >> 1)) {
+         src = grScaleBitmapOneHalf(src);
+         if (to_free) imfree(to_free);
+         to_free = src;
+      }
 
-   while (gx <= (src->x >> 1) && gy <= (src->y >> 1)) {
-      src = grScaleBitmapOneHalf(src);
-      if (to_free) imfree(to_free);
-      to_free = src;
+      if (gx < src->x * 0.666666f && gy < src->y * 0.666666f) {
+         src = grScaleBitmapTwoThirds(src);
+         if (to_free) imfree(to_free);
+         to_free = src;
+      }
    }
-
-   #if 1
-   if (gx < src->x * 0.666666f && gy < src->y * 0.666666f) {
-      src = grScaleBitmapTwoThirds(src);
-      if (to_free) imfree(to_free);
-      to_free = src;
-   }
-   #endif
 
    if (gx == src->x && gy == src->y) {
       if (to_free)
@@ -2199,94 +2402,41 @@ Image *grScaleBitmap(Image *src, int gx, int gy)
          memcpy(res->pixels, src->pixels, res->y * res->stride);
          return res;
       }
-   } else if (!downsample_cubic) {
-      res = grScaleBitmapX(src, gx);
-      if (to_free) imfree(to_free);
-      to_free = res;
-      res = grScaleBitmapY(res, gy);
-      imfree(to_free);
-   } else {
+   } else if (upsample ? upsample_cubic : downsample_cubic) {
       res = grCubicScaleBitmapY(src, gy);
       if (to_free) imfree(to_free);
       to_free = res;
       res = grCubicScaleBitmapX(res, gx);
       imfree(to_free);
+    } else {
+      #if 1
+      image_resize_old(dest, src);
+      if (to_free) imfree(to_free);
+      res = NULL;
+      #else
+      res = grScaleBitmapX(src, gx);
+      if (to_free) imfree(to_free);
+      to_free = res;
+      res = grScaleBitmapY(res, gy);
+      imfree(to_free);
+      #endif
    }
    return res;
 }
 
 
+void image_resize(Image *dest, Image *src)
+{
 #if BPP==3
-void image_resize(Image *dest, Image *src, ImageFile *src_c)
-{
-   ImageProcess proc_buffer[16], *q = stb_temp(proc_buffer, resize_threads * sizeof(*q));
-   SplitPoint *p = stb_temp(point_buffer, dest->x * sizeof(*p));
-   int i,j0,j1,k;
-   float x,dx,dy;
-   assert(reentry == 0);
-   assert(src->frame == 0);
-   dx = (float) (src->x - 1) / (dest->x - 1);
-   dy = (float) (src->y - 1) / (dest->y - 1);
-   x=0;
-   for (i=0; i < dest->x; ++i) {
-      p[i].i = (int) floor(x);
-      p[i].f = (int) floor(255.9f*(x - p[i].i));
-      if (p[i].i >= src->x-1) {
-         p[i].i = src->x-2;
-         p[i].f = 255;
-      }
-      x += dx;
-      p[i].i *= BPP;
-   }
-   for (k=0; k < dest->x; k += CACHE_REBLOCK) {
-      int k2 = stb_min(k+CACHE_REBLOCK, dest->x);
-      for (i=k2-1; i > k; --i) {
-         p[i].i -= p[i-1].i;
-      }
-   }
-   j0 = 0;
-   for (i=0; i < resize_threads; ++i) {
-      j1 = dest->y * (i+1) / resize_threads;
-      q[i].dest = dest;
-      q[i].src = src;
-      q[i].j0 = j0;
-      q[i].j1 = j1;
-      q[i].dy = dy;
-      q[i].p = p;
-      q[i].done = FALSE;
-      q[i].src_c = src_c;
-      j1 = j0;
-   }
-
-   if (resize_threads == 1) {
-      image_resize_work(q);
-   } else {
-      barrier();
-      for (i=1; i < resize_threads; ++i)
-         stb_workq(resize_workers, image_resize_work, q+i, NULL);
-      image_resize_work(q);
-
-      for(;;) {
-         for (i=1; i < resize_threads; ++i)
-            if (!q[i].done)
-               break;
-         if (i == resize_threads) break;
-         Sleep(10);
-      }
-   }
-
-   stb_tempfree(point_buffer, p);
-   stb_tempfree(proc_buffer , q);
-}
+   image_resize_old(dest, src);
 #else
-void image_resize(Image *dest, Image *src, ImageFile *src_c)
-{
    int j;
    Image *temp;
-   temp = grScaleBitmap(src, dest->x, dest->y);
-   for (j=0; j < dest->y; ++j)
-      memcpy(dest->pixels + j*dest->stride, temp->pixels + j*temp->stride, BPP*dest->x);
-   imfree(temp);
-   if(src_c) src_c->status = LOAD_available;
-}
+   temp = grScaleBitmap(src, dest->x, dest->y, dest);
+   if (temp) {
+      for (j=0; j < dest->y; ++j)
+         memcpy(dest->pixels + j*dest->stride, temp->pixels + j*temp->stride, BPP*dest->x);
+      imfree(temp);
+   }
 #endif
+}

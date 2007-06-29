@@ -1,4 +1,6 @@
   Version 0.57
+    * feature: cubic image resampling
+    * bugfix: occasional error when advancing to image that was about to be decoded
     * bugfix: comment code
     * bugfix: fix logic for fitting large images onscreen to not stop a few pixels short
 
