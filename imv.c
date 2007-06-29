@@ -41,8 +41,6 @@
 // trivial error handling
 void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
-#define _DEBUG
-
 // OutputDebugString with varargs, can be compiled out
 #ifdef _DEBUG
 int do_debug;
@@ -1647,6 +1645,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    int image_n;
 
    resize_threads = stb_processor_count();
+   if (resize_threads > 4) resize_threads = 4;
+
    #ifdef _DEBUG
    do_debug = IsDebuggerPresent();
    #endif
@@ -2042,21 +2042,6 @@ static Color lerp(Color dest, Color src, uint8 a)
    return (rb & 0xff00ff) + (ga & 0xff00ff00);
 }
 
-static int cubic(int x0, int x1, int x2, int x3, int lerp8)
-{
-   int a = 3*(x1-x2) + (x3-x0);
-   int d = x1+x1;
-   int c = x2 - x0;
-   int b = -a-d + x0+x2;
-
-   int res = a * lerp8 + (b << 8);
-   res = (res * lerp8);
-   res = ((res >> 16) + c) * lerp8;
-   res = ((res >> 8) + d) >> 1;
-   if (res < 0) res = 0; else if (res > 255) res = 255;
-   return res;
-}
-
 #if 1
 
 
@@ -2074,6 +2059,7 @@ static void cubicRGBA(uint32 *dest, uint32 *x0, uint32 *x1, uint32 *x2, uint32 *
    if (len <= 0) return;
    __asm {
       // these save/restores shouldn't be necessary... but they seem to be in VC6 opt builds
+      // buggy compiler, or I'm doing something wrong
       push eax
       push ebx
       push ecx
@@ -2171,6 +2157,21 @@ static void cubicRGBA(uint32 *dest, uint32 *x0, uint32 *x1, uint32 *x2, uint32 *
 }
 
 #else
+static int cubic(int x0, int x1, int x2, int x3, int lerp8)
+{
+   int a = 3*(x1-x2) + (x3-x0);
+   int d = x1+x1;
+   int c = x2 - x0;
+   int b = -a-d + x0+x2;
+
+   int res = a * lerp8 + (b << 8);
+   res = (res * lerp8);
+   res = ((res >> 16) + c) * lerp8;
+   res = ((res >> 8) + d) >> 1;
+   if (res < 0) res = 0; else if (res > 255) res = 255;
+   return res;
+}
+
 static void cubicRGBA(Color *dest, Color *x0, Color *x1, Color *x2, Color *x3, int lerp8, int step_dest, int step_src, int len)
 {
    int i;
@@ -2192,24 +2193,32 @@ static void cubicRGBA(Color *dest, Color *x0, Color *x1, Color *x2, Color *x3, i
 
 #define PLUS(x,y)   ((uint32 *) ((uint8 *) (x) + (y)))
 
-#define CUBIC_BLOCK  32
-Image *tot;
-Image *grCubicScaleBitmapX(Image *src, int out_w)
+struct
 {
-   int x,dx,i,j,k;
-   Image *out = bmp_alloc(out_w, src->y);
-   //tot = out;
-   if ((uint) out - 0x1000 >= 0x8000000) __asm int 3;
-   dx = (src->x-1)*65536 / (out_w-1);
-   for (k=0; k < out->y; k += CUBIC_BLOCK) {
-      int k2 = stb_min(k+CUBIC_BLOCK, out->y);
+   Image *src;
+   Image *out;
+   int out_len;
+   int delta;
+} cubic_work;
+
+#define CUBIC_BLOCK  32
+void * grCubicScaleBitmapX_work(int n)
+{
+   int out_w = cubic_work.out_len;
+   int x,dx,i,j,k,k_start, k_end;
+   Image *out = cubic_work.out;
+   Image *src = cubic_work.src;
+   dx = cubic_work.delta;
+   k_start = out->y *   n   / resize_threads;
+   k_end   = out->y * (n+1) / resize_threads;
+   for (k=k_start; k < k_end; k += CUBIC_BLOCK) {
+      int k2 = stb_min(k+CUBIC_BLOCK, k_end);
       x = 0;
       for (i=0; i < out_w; ++i) {
          uint32 *data = (uint32 *) (src->pixels + k*src->stride);
          uint32 *dest = (uint32 *) (out->pixels + k*out->stride) + i;
          int xp = (x >> 16);
          int xw = (x >> 8) & 255;
-   if ((uint) dest - 0x1000 >= 0x8000000) __asm int 3;
          if (xp == 0) {
             cubicRGBA(dest, data+xp,data+xp,data+xp+1,data+xp+2,xw,out->stride,src->stride,k2-k);
          } else if (xp >= src->x - 2) {
@@ -2228,16 +2237,53 @@ Image *grCubicScaleBitmapX(Image *src, int out_w)
          x += dx;
       }
    }
-   return out;
+   barrier();
+   return NULL;
 }
 
-Image *grCubicScaleBitmapY(Image *src, int out_h)
+Image *grCubicScaleBitmapX(Image *src, int out_w)
 {
-   int y,dy,j;
-   Image *out = bmp_alloc(src->x, out_h);
-   dy = ((src->y-1)*65536-1) / (out_h-1);
-   y = 0;
-   for (j=0; j < out_h; ++j,y+=dy) {
+   int i;
+   cubic_work.out = bmp_alloc(out_w, src->y);
+   cubic_work.delta = (src->x-1)*65536 / (out_w-1);
+   cubic_work.src = src;
+   cubic_work.out_len = out_w;
+   barrier();
+
+   if (resize_threads == 1) {
+      grCubicScaleBitmapX_work(0);
+   } else {
+      volatile void *which[4];
+      for (i=0; i < resize_threads; ++i)
+         which[i] = (void *) 1;
+      barrier();
+      for (i=1; i < resize_threads; ++i)
+         stb_workq(resize_workers, (stb_thread_func) grCubicScaleBitmapX_work, (void *) i, which+i);
+      grCubicScaleBitmapX_work(0);
+
+      for(;;) {
+         for (i=1; i < resize_threads; ++i)
+            if (which[i])
+               break;
+         if (i == resize_threads) break;
+         Sleep(10);
+      }
+   }
+   return cubic_work.out;
+}
+
+Image *grCubicScaleBitmapY_work(int n)
+{
+   int y,dy,j,j_end;
+   int out_h = cubic_work.out_len;
+   Image *src = cubic_work.src;
+   Image *out = cubic_work.out;
+   dy = cubic_work.delta;
+
+   j = out_h * n / resize_threads;
+   j_end = out_h * (n+1) / resize_threads;
+   y = j * dy;
+   for (; j < j_end; ++j,y+=dy) {
       uint32 *dest  = (uint32 *) (out->pixels + j*out->stride);
       int yp = (y >> 16);
       uint8 yw = (y >> 8);
@@ -2247,46 +2293,38 @@ Image *grCubicScaleBitmapY(Image *src, int out_h)
       uint32 *data3 = (yp < src->y-2) ? PLUS(data2, src->stride) : data2;
       cubicRGBA(dest, data0, data1, data2, data3, yw, 4,4,out->x);
    }
-   return out;
+   return NULL;
 }
 
-
-Image *grScaleBitmapX(Image *src, int out_w)
+Image *grCubicScaleBitmapY(Image *src, int out_h)
 {
-   int x,dx,i,j;
-   Image *out = bmp_alloc(out_w, src->y);
-   dx = (src->x-1)*65536 / (out_w-1);
-   for (j=0; j < out->y; ++j) {
-      uint32 *data = (uint32*)(src->pixels + j*src->stride);
-      uint32 *dest = (uint32*)(out->pixels + j*out->stride);
-      x = 0;
-      for (i=0; i < out_w; ++i) {
-         int xp = (x >> 16);
-         int xw = (x >> 8) & 255;
-         dest[i] = lerp(data[xp], data[xp+1], xw);
-         x += dx;
+   int i;
+   cubic_work.src = src;
+   cubic_work.out = bmp_alloc(src->x, out_h);
+   cubic_work.delta = ((src->y-1)*65536-1) / (out_h-1);
+   cubic_work.out_len = out_h;
+   barrier();
+
+   if (resize_threads == 1) {
+      grCubicScaleBitmapY_work(0);
+   } else {
+      volatile void *which[4];
+      for (i=0; i < resize_threads; ++i)
+         which[i] = (void *) 1;
+      barrier();
+      for (i=1; i < resize_threads; ++i)
+         stb_workq(resize_workers, (stb_thread_func) grCubicScaleBitmapY_work, (void *) i, which+i);
+      grCubicScaleBitmapY_work(0);
+
+      for(;;) {
+         for (i=1; i < resize_threads; ++i)
+            if (which[i])
+               break;
+         if (i == resize_threads) break;
+         Sleep(10);
       }
    }
-   return out;
-}
-
-Image *grScaleBitmapY(Image *src, int out_h)
-{
-   int y,dy,i,j;
-   Image *out = bmp_alloc(src->x, out_h);
-   dy = ((src->y-1)*65536-1) / (out_h-1);
-   y = 0;
-   for (j=0; j < out_h; ++j,y+=dy) {
-      int yp = (y >> 16);
-      uint8 yw = (y >> 8);
-      uint32 *data1 = (uint32*)(src->pixels + yp*src->stride);
-      uint32 *data2 = PLUS(data1, src->stride);
-      uint32 *dest  = (uint32*)(out->pixels + j*out->stride);
-      for (i=0; i < out->x; ++i) {
-         dest[i] = lerp(data1[i], data2[i], yw);
-      }
-   }
-   return out;
+   return cubic_work.out;
 }
 
 // downsampling
