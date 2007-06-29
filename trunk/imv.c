@@ -1629,6 +1629,8 @@ int cur_is_current(void)
    return !strcmp(cur_filename, source_c->filename);
 }
 
+#define MAX_RESIZE   4
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
    char filenamebuffer[4096];
@@ -1645,7 +1647,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    int image_n;
 
    resize_threads = stb_processor_count();
-   if (resize_threads > 4) resize_threads = 4;
+
+   resize_threads = 8;
+   if (resize_threads > MAX_RESIZE) resize_threads = MAX_RESIZE;
 
    #ifdef _DEBUG
    do_debug = IsDebuggerPresent();
@@ -2010,6 +2014,7 @@ void image_resize_old(Image *dest, Image *src)
    stb_tempfree(proc_buffer , q);
 }
 
+#if BPP==4
 //
 
 #undef R
@@ -2081,38 +2086,44 @@ static void cubicRGBA(uint32 *dest, uint32 *x0, uint32 *x1, uint32 *x2, uint32 *
    } looptop: __asm {
 
       movd  mm1,[eax]
+      movd  mm4,[edx]
       movd  mm2,[ebx]
       movd  mm3,[ecx]
-      movd  mm4,[edx]
+      add       eax,step_src
+      add       ebx,step_src
       punpcklbw mm1,mm0   // mm1 = x0
+      punpcklbw mm4,mm0   // mm4 = x3
       punpcklbw mm2,mm0   // mm2 = x1
       punpcklbw mm3,mm0   // mm3 = x2
-      punpcklbw mm4,mm0   // mm4 = x3
+
+      add       ecx,step_src
+      add       edx,step_src
 #if 1
+      // catmull-rom cubic
+      // "scheduled" to try to spread stuff out early
+      // also the final shift by two has been optimized up earlier
+      // (which means we really only get 6-7 good bits)
       psubw     mm4,mm1   // mm4 = x3-x0
       movq      mm5,mm2   // mm5 = x1
-      psubw     mm5,mm3   // mm5 = x1-x2
-      pmullw    mm5,three // mm5 = 3*(x1-x2)
-      paddw     mm5,mm4   // mm5 = a
-      paddw     mm2,mm2   // mm2 = d
       movq      mm6,mm3   // mm6 = x2
-      psubw     mm6,mm1   // mm6 = c
+      psubw     mm5,mm3   // mm5 = x1-x2
       paddw     mm3,mm1   // mm3 = x0+x2
+      psubw     mm6,mm1   // mm6 = c
+      psubw     mm3,mm2   // mm3 = x0+x2-d/2
+      pmullw    mm5,three // mm5 = 3*(x1-x2)
       psubw     mm3,mm2   // mm3 = x0+x2-d
-      psubw     mm3,mm5   // mm3 = b
-      psllw     mm5,3     // mm5 = a(15.1)
-      pmulhw    mm5,mm7   // mm5 = a
-      pmulhw    mm5,mm7   // mm5 = a
-      pmulhw    mm5,mm7   // mm5 = a*t^3
-      psllw     mm3,2     // mm3 = b
-      pmulhw    mm3,mm7   // mm3 = b
-      pmulhw    mm3,mm7   // mm3 = b*t^2
-      psllw     mm6,1     // mm6 = c
       pmulhw    mm6,mm7   // mm6 = c*t
-      paddw     mm5,mm2
-      paddw     mm5,mm3
+      paddw     mm5,mm4   // mm5 = a
+      psubw     mm3,mm5   // mm3 = b
+
+      psllw     mm5,2     // mm5 = a(15.1)
+      psllw     mm3,1     // mm3 = b
+      pmulhw    mm5,mm7   // mm5 = a*t
+      paddw     mm6,mm2   // mm6 = c*t+d
+      paddw     mm5,mm3   // mm5 = a*t + b
+      pmulhw    mm5,mm7   // mm5 = a*t^2+b*t
+      pmulhw    mm5,mm7   // mm5 = a*t^3+b*t^2
       paddw     mm5,mm6
-      psraw     mm5,1
       packuswb  mm5,mm5
       movd      [edi],mm5
 #else
@@ -2139,10 +2150,6 @@ static void cubicRGBA(uint32 *dest, uint32 *x0, uint32 *x1, uint32 *x2, uint32 *
       packuswb  mm1,mm1
       movd      [edi],mm1
 #endif
-      add       eax,step_src
-      add       ebx,step_src
-      add       ecx,step_src
-      add       edx,step_src
       add       edi,step_dest
       dec       esi
       jnz       looptop
@@ -2253,7 +2260,7 @@ Image *grCubicScaleBitmapX(Image *src, int out_w)
    if (resize_threads == 1) {
       grCubicScaleBitmapX_work(0);
    } else {
-      volatile void *which[4];
+      volatile void *which[MAX_RESIZE];
       for (i=0; i < resize_threads; ++i)
          which[i] = (void *) 1;
       barrier();
@@ -2308,7 +2315,7 @@ Image *grCubicScaleBitmapY(Image *src, int out_h)
    if (resize_threads == 1) {
       grCubicScaleBitmapY_work(0);
    } else {
-      volatile void *which[4];
+      volatile void *which[MAX_RESIZE];
       for (i=0; i < resize_threads; ++i)
          which[i] = (void *) 1;
       barrier();
@@ -2409,13 +2416,6 @@ Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
    // check if we're scaling up
    if (gx > src->x || gy > src->y)  {
       upsample = TRUE;
-      #if 0
-      res = grCubicScaleBitmapY(src, gy);
-      to_free = res;
-      res = grCubicScaleBitmapX(res, gx);
-      imfree(to_free);
-      return res;
-      #endif
    } else {
       // maybe should do something smarter here, like find the
       // nearest box size, instead of repetitive powers of two
@@ -2461,7 +2461,7 @@ Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
    }
    return res;
 }
-
+#endif // BPP==4
 
 void image_resize(Image *dest, Image *src)
 {
