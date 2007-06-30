@@ -28,6 +28,8 @@
 
 #define STB_DEFINE
 #include "stb.h"          /*     http://nothings.org/stb.h         */
+
+#define STB_IMAGE_FAILURE_USERMSG
 #include "stb_image.c"    /*     http://nothings.org/stb_image.c   */
 
 #include "resource.h"
