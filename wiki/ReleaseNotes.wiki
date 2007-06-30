@@ -2,9 +2,7 @@
 
 = Release =
 
-This is an alpha version, targetting the eventual milestones:
-
-  version 0.90 - beta 
+This is a beta version, targetting the eventual milestones:
 
   version 1.00 - stable release 
 
