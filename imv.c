@@ -16,9 +16,8 @@
     Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-// Set section alignment to be nice and small
+// Set section alignment to minimize alignment overhead
 #pragma comment(linker, "/FILEALIGN:0x200")
-//#pragma comment(linker, "/OPT:NOWIN98")
 
 #define _WIN32_WINNT 0x0400
 #include <windows.h>
@@ -99,6 +98,7 @@ HWND  win;
 
 // lightweight SetDIBitsToDevice() wrapper
 // (once upon a time this was a platform-independent, hence the name)
+// if 'dim' is set, draw it darkened
 void platformDrawBitmap(HDC hdc, int x, int y, unsigned char *bits, int w, int h, int stride, int dim)
 {
    int i;
@@ -111,13 +111,22 @@ void platformDrawBitmap(HDC hdc, int x, int y, unsigned char *bits, int w, int h
    b.biBitCount=BPP*8;
    b.biWidth = stride/BPP;
    b.biHeight = -h;  // tell windows the bitmap is stored top-to-bottom
+
    if (dim)
+      // divide the brightness of each channel by two... (if BPP==3, this
+      // does 4 pixels every 3 iterations)
       for (i=0; i < stride*h; i += 4)
          *(uint32 *)(bits+i) = (*(uint32 *)(bits+i) >> 1) & 0x7f7f7f7f;
+
    result = SetDIBitsToDevice(hdc, x,y, w,abs(h), 0,0, 0,abs(h), bits, (BITMAPINFO *) &b, DIB_RGB_COLORS);
    if (result == 0) {
       DWORD e = GetLastError();
    }
+   // bug: we restore by shifting, so we've discarded the bottom bit;
+   // thus, once you've viewed the help and come back, the display
+   // is slightly wrong until you resize or switch images. so we should
+   // probably save and restore it instead... slow, but we're displaying
+   // the help so no big deal?
    if (dim)
       for (i=0; i < stride*h; i += 4)
          *(uint32 *)(bits+i) = (*(uint32 *)(bits+i) << 1);
@@ -290,8 +299,8 @@ void *diskload_task(void *p)
    }
 }
 
-// given raw decoded data, make it into a proper Image (e.g. creating a
-// windows-compatible bitmap with 4-byte aligned rows)
+// given raw decoded data from stbi_load, make it into a proper Image (e.g. creating a
+// windows-compatible bitmap with 4-byte aligned rows and BGR color order)
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image_n)
 {
    int i,j,k=0;
@@ -308,7 +317,7 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image
          image_data[k+0] = image_data[k+2];
          image_data[k+2] = t;
 
-          #if BPP==4
+         #if BPP==4
          // if image had an alpha channel, pre-blend with background
          if (image_n == 4) {
             unsigned char *p = image_data+k;
@@ -370,7 +379,7 @@ start:
       // if there is a best one, it's possible that while iterating
       // it was flushed by the main thread. so let's make sure it's
       // still ready to decode. (Of course it ALSO could have changed
-      // lru priority and other such, or not be the best anymore, but
+      // lru priority and other such, so not be the best anymore, but
       // it's no big deal to get that wrong since it's close.)
       stb_mutex_begin(cache_mutex);
       {
@@ -483,6 +492,7 @@ void frame(Image *z)
    }
 }
 
+// free an image and its contents
 void imfree(Image *x)
 {
    if (x) {
@@ -509,8 +519,12 @@ Image *cur;
 // the filename for the currently displayed image
 char *cur_filename;
 int show_help=0;
+int downsample_cubic = 0;
+int upsample_cubic = TRUE;
 
-char helptext_center[128] =
+
+// declare with extra bytes so we can print the version number into it
+char helptext_center[88] =
    "imv(stb)\n"
    "Copyright 2007 Sean Barret\n"
    "http://code.google.com/p/stb-imv\n"
@@ -523,10 +537,11 @@ char helptext_left[] =
    "ALT-ENTER: toggle size\n"
    "CTRL-PLUS: zoom in\n"
    "CTRL-MINUS: zoom out\n"
-   "LEFT, SPACE: next image\n"
-   "RIGHT, BACKSPACE: previous image\n"
+   "RIGHT, SPACE: next image\n"
+   "LEFT, BACKSPACE: previous image\n"
    "CTRL-O: open image\n"
    "F: toggle frame\n"
+   "C: toggle resize quality\n"
    "SHIFT-F: toggle white stripe in frame\n"
    "CTRL-F: toggle both\n"
    "L: toggle filename label\n"
@@ -587,7 +602,9 @@ void set_error(volatile ImageFile *z)
 
 HFONT label_font;
 int show_frame = TRUE;   // show border or not?
-int show_label = FALSE;  // 
+int show_label = FALSE;  // display the help text or not
+
+// WM_PAINT, etc.
 void display(HWND win, HDC hdc)
 {
    RECT rect,r2;
@@ -630,6 +647,7 @@ void display(HWND win, HDC hdc)
    r2.right = x+cur->x;
    r2.top  = y + cur->y;   FillRect(hdc, &r2, b);
 
+   // should we show the name of the file?
    if (show_label) {
       SIZE size;
       RECT z;
@@ -638,7 +656,7 @@ void display(HWND win, HDC hdc)
       if (label_font) old = SelectObject(hdc, label_font);
 
       // get rect around label so we can draw it ourselves, because
-      // the DrawText() one is lame
+      // the DrawText() one is poorly sized
 
       GetTextExtentPoint32(hdc, name, strlen(name), &size);
       z.left = rect.left+1;
@@ -662,8 +680,9 @@ void display(HWND win, HDC hdc)
       // build rect of correct height
       box = rect;
       box.top = stb_max((h - h2) >> 1, 0);
-      box.bottom = box.top + h2;
+      //box.bottom = box.top + h2;
       // expand on left & right so following code is well behaved
+      // (we're centered anyway, so the exact numbers don't matter)
       box.left -= 200; box.right += 200;
 
       // draw center text
@@ -819,34 +838,96 @@ void GetAdjustedWindowRect(HWND win, RECT *rect)
    }
 }
 
-// compute the size we'd prefer this window to be at
-void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y);
+// compute the size we'd prefer this window to be at for 1:1-ness
+void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
+{
+   // @TODO: this probably isn't right if the virtual TL isn't (0,0)???
+   int cx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+   int cy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+   int cx2 = GetSystemMetrics(SM_CXSCREEN);
+   int cy2 = GetSystemMetrics(SM_CYSCREEN);
+
+   if (w <= cx2 && h <= cy2) {
+      // if the image fits on the primary monitor, go for it
+      *w_ideal = w;
+      *h_ideal = h;
+   } else if (w - FRAME*2 <= cx2 && h - FRAME*2 <= cy2) {
+      // if the image fits on the primary monitor with border...
+      // this makes the test above irrelevant
+      *w_ideal = w;
+      *h_ideal = h;
+   } else {
+      // will we show more if we use the virtual desktop, rather than just the primary?
+      int w1,h1,w2,h2;
+      compute_size(cx+FRAME*2 ,cy+FRAME*2,w,h,&w1,&h1);
+      compute_size(cx2+FRAME*2,cy2+FRAME*2,w,h,&w2,&h2);
+      // require it be "significantly more" on the virtual
+      if (h1 > h2*1.25 || w1 > w2*1.25) {
+         *w_ideal = stb_min(cx,w1)+FRAME*2;
+         *h_ideal = stb_min(cy,h1)+FRAME*2;
+      } else {
+         *w_ideal = stb_min(cx2,w2)+FRAME*2;
+         *h_ideal = stb_min(cy2,h2)+FRAME*2;
+      }
+      // compute actual size image will be if fit to this window
+      compute_size(*w_ideal, *h_ideal, w,h, &w,&h);
+      // and add the padding in
+      w += FRAME*2;
+      h += FRAME*2;
+   }
+
+   // now find center point...
+   if ((cx != cx2 || cy != cy2) && w <= cx2+FRAME*2 && h <= cy2+FRAME*2) {
+      // if it fits on the primary, center it on the primary
+      *x = (cx2 - w) >> 1;
+      *y = (cy2 - h) >> 1;
+   } else {
+      // otherwise center on the virtual
+      *x = (cx - w) >> 1;
+      *y = (cy - h) >> 1;
+   }
+}
+
 
 enum
 {
-   DISPLAY_actual,
-   DISPLAY_current,
+   DISPLAY_actual,   // display the image 1:1, or fullscreen if larger than screen
+   DISPLAY_current,  // display the image in the current window's size
 
    DISPLAY__num,
 };
 
 int display_mode;
 
+// resize the current image to match the current window/mode, adjusting
+// the window in mode DISPLAY_actual. If 'maximize' and the mode is
+// DISPLAY_current, it means they've // double-clicked or alt-entered
+// into 'fullscreen', so we want to maximize the window.
 void size_to_current(int maximize)
 {
    int w2,h2;
    int w,h,x,y;
-   Image *z = source;
 
-   w2 = source->x+FRAME*2, h2 = source->y+FRAME*2;
+   // the 1:1 actual size WITH frame
+   w2 = source->x+FRAME*2;
+   h2 = source->y+FRAME*2;
+
    switch (display_mode) {
       case DISPLAY_actual: {
          int cx,cy;
          RECT rect;
+         // given the actual size, compute the ideal window size
+         // (which is either 1:1 or fullscreen) and center point
          ideal_window_size(w2,h2, &w,&h, &x,&y);
+
+         // get the desktop size
          cx = GetSystemMetrics(SM_CXSCREEN);
          cy = GetSystemMetrics(SM_CYSCREEN);
+
+         // if the window fits on the desktop
          if (w <= cx && h <= cy) {
+            // try to use the current center point, as much as possible
             GetAdjustedWindowRect(win, &rect);
             x = (rect.right + rect.left - w) >> 1;
             y = (rect.top + rect.bottom - h) >> 1;
@@ -855,12 +936,15 @@ void size_to_current(int maximize)
          }
          break;
       }
+
       case DISPLAY_current:
          if (maximize) {
+            // fullscreen, plus the frame around the edge
             x = y = -FRAME;
             w = GetSystemMetrics(SM_CXSCREEN) + FRAME*2;
             h = GetSystemMetrics(SM_CYSCREEN) + FRAME*2;
          } else {
+            // just use the current window
             RECT rect;
             GetAdjustedWindowRect(win, &rect);
             x = rect.left;
@@ -871,26 +955,36 @@ void size_to_current(int maximize)
          break;
    }
 
+   // if the image is 1:1, we don't need to resize, so skip
+   // queueing and all that and just build it
    if (w == w2 && h == h2) {
       int j;
-      unsigned char *p = z->pixels;
+      unsigned char *p = source->pixels;
+      // free the current image
       imfree(cur);
       free(cur_filename);
-      cur = bmp_alloc(z->x + FRAME*2, z->y + FRAME*2);
-      display_error[0] = 0;
+
+      // build the new one
+      cur = bmp_alloc(w2,h2);
       cur_filename = strdup(source_c->filename);
+      // build a frame around the data
       frame(cur);
-      {
-         for (j=0; j < z->y; ++j) {
-            unsigned char *q = cur->pixels + (j+FRAME)*cur->stride + FRAME*BPP;
-            memcpy(q, p, z->x*BPP);
-            p += z->x*BPP;
-         }
+      // copy the raw data in
+      for (j=0; j < source->y; ++j) {
+         unsigned char *q = cur->pixels + (j+FRAME)*cur->stride + FRAME*BPP;
+         memcpy(q, p, source->x*BPP);
+         p += source->x*BPP;
       }
+      // no error for this image
+      display_error[0] = 0;
+      // if they don't want the frame, remove it now
       if (!show_frame) x+=FRAME,y+=FRAME,w-=FRAME*2,h-=FRAME*2;
+
+      // move/show it
       MoveWindow(win, x,y,w,h, TRUE);
       InvalidateRect(win, NULL, FALSE);
    } else {
+      // not 1:1; it requires resizing, so queue a resize request
       qs.x = x;
       qs.y = y;
       qs.w = w;
@@ -898,6 +992,8 @@ void size_to_current(int maximize)
    }
 }
 
+// when the user toggles the frame on and off, toggle the flag
+// and update the window size as appropriate
 void toggle_frame(void)
 {
    RECT rect;
@@ -917,74 +1013,110 @@ void toggle_frame(void)
    SetWindowPos(win, NULL, rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top, SWP_NOCOPYBITS|SWP_NOOWNERZORDER);
 }
 
+// the most recent image we've seen
+int best_lru = 0;
+
+// when we change which file is the one being viewed/resized,
+// call this function
 void update_source(ImageFile *q)
 {
-   Image *z = q->image;
-
-   source = z;
+   source = q->image;
    source_c = q;
+   o(("Making %s (%d) current\n", q->filename, q->lru));
+   if (q->lru > best_lru)
+      best_lru = q->lru;
 
-   if (z)
-      size_to_current(FALSE);
+   if (source)
+      size_to_current(FALSE); // don't maximize
 }
 
+// toggle between the two main display modes
 void toggle_display(void)
 {
    if (source) {
       display_mode = (display_mode + 1) % DISPLAY__num;
-      size_to_current(TRUE);
+      size_to_current(TRUE); // _DO_ maximize if DISPLAY_current
    }
 }
 
-char path_to_file[4096], *filename;
-char **image_files;
-int cur_loc = -1;
+// manage the list of files in the current directory
+// note that this is totally detached from the image cache;
+// if you switch directories, the cache will still have
+// images from the old directory, and if you switch back
+// before they're flushed, it will still be valid
+char path_to_file[4096];
+char *filename;   // @TODO: gah, we have cur_filename AND filename. and filename is being set dumbly!
+int cur_loc = -1; // offset within the current list of files
 
+// information about files we have currently loaded
 struct
 {
    char *filename;
    int lru;
 } *fileinfo;
+
+// stb_sdict is a string dictionary (strings as keys, void * as values)
+// dictionary mapping filenames (key) to cached images (ImageFile *)
+// @TODO: do we need this, or can it be in fileinfo?
 stb_sdict *file_cache;
 
+// when switching/refreshing directories, free this data
 void free_fileinfo(void)
 {
    int i;
    for (i=0; i < stb_arr_len(fileinfo); ++i)
-      free(fileinfo[i].filename);
+      free(fileinfo[i].filename); // allocated by stb_readdir
    stb_arr_free(fileinfo);
    fileinfo = NULL;
 }
 
+// build a filelist for the current directory
 void init_filelist(void)
 {
-   char *s = NULL;
+   char **image_files; // stb_arr (dynamic array type) of filenames
+   char *to_free = NULL; 
    int i;
    if (fileinfo) {
-      filename = s = strdup(fileinfo[cur_loc].filename);
+      // cache the current filename so we can look for it in the list below
+      // @BUG: is this leaking the old filename?
+      filename = to_free = strdup(fileinfo[cur_loc].filename);
       free_fileinfo();
    }
 
    image_files = stb_readdir_files_mask(path_to_file, "*.jpg;*.jpeg;*.png;*.bmp");
    if (image_files == NULL) error("Error: couldn't read directory.");
 
-   cur_loc = 0;
+   // given the array of filenames, build an equivalent fileinfo array
    stb_arr_setlen(fileinfo, stb_arr_len(image_files));
+
+   // while we're going through, let's look for the current file, and
+   // initialize 'cur_loc' to that value. Otherwise it gets a 0.
+   cur_loc = 0;
    for (i=0; i < stb_arr_len(image_files); ++i) {
       fileinfo[i].filename = image_files[i];
       fileinfo[i].lru = 0;      
       if (!stricmp(image_files[i], filename))
          cur_loc = i;
    }
-   if (s) free(s);
+
+   // if we made a temp copy of the filename, free it... wait, why,
+   // given that we're not setting filename=NULL?!
+   // @TODO: why didn't this hurt? if (to_free) free(to_free);
+
+   // free the stb_readdir() array, but not the filenames themselves
+   stb_arr_free(image_files); 
 }
 
-
+// current lru timestamp
 int lru_stamp=1;
+
+// maximum size of the cache
 int max_cache_bytes = 256 * (1 << 20); // 256 MB; one 5MP image is 20MB
 
+// minimum number of cache entries
 #define MIN_CACHE  3    // always keep 3 images cached, to allow prefetching
 
+// compare the lru timestamps in two cached images, with extra indirection
 int ImageFilePtrCompare(const void *p, const void *q)
 {
    ImageFile *a = *(ImageFile **) p;
@@ -992,11 +1124,18 @@ int ImageFilePtrCompare(const void *p, const void *q)
    return (a->lru < b->lru) ? -1 : (a->lru > b->lru);   
 }
 
+// see if we should flush any data. we should flush if
+// (a) there aren't enough free slots for prefetching, and
+// (b) if we're using too much memory
+
 void flush_cache(int locked)
 {
-   int limit;
+   int limit = MAX_CACHED_IMAGES - MIN_CACHE; // maximum images to cache
+
    volatile ImageFile *list[MAX_CACHED_IMAGES];
    int i, total=0, occupied_slots=0, n=0;
+
+   // count number of images in use, and size they're using
    for (i=0; i < MAX_CACHED_IMAGES; ++i) {
       volatile ImageFile *z = &cache[i];
       if (z->status != LOAD_unused)
@@ -1008,63 +1147,72 @@ void flush_cache(int locked)
             total += z->len;
          }
          list[n++] = z;
-      }
+      } // if main doesn't own, don't worry about it... so we may underestimate sometimes
    }
 
-   limit = MAX_CACHED_IMAGES - MIN_CACHE;
-   if (total > max_cache_bytes || occupied_slots > limit) {
-      qsort((void *) list, n, sizeof(*list), ImageFilePtrCompare);
-      if (!locked) stb_mutex_begin(cache_mutex);
-      for (i=0; i < n && occupied_slots > MIN_CACHE && (occupied_slots > limit || total > max_cache_bytes); ++i) {
-         ImageFile p;
-         /* @TODO: this is totally squirrely and probably buggy. we need to
-          * rethink how we can propose things to the disk loader and then
-          * later change our minds. is this mutex good enough?
-          */
-         {
-            p.status = list[i]->status;
-            if (MAIN_OWNS(&p) && p.status != LOAD_unused) {
-               p = *list[i];
-               list[i]->bail = 1; // force disk to bail if it gets this -- can't happen?
-               list[i]->filename = NULL;
-               list[i]->filedata = NULL;
-               list[i]->len = 0;
-               list[i]->image = NULL;
-               list[i]->error = NULL;
-               list[i]->status = LOAD_unused;
-            }
-         }
-         if (MAIN_OWNS(&p) && p.status != LOAD_unused) {
-            if (!locked) stb_mutex_end(cache_mutex);
-o(("MAIN: freeing cache: %s\n", p.filename));
-            stb_sdict_remove(file_cache, p.filename, NULL);
-            --occupied_slots; // occupied slots
-            if (p.status == LOAD_available)
-               total -= p.image->stride * p.image->y;
-            else if (p.status == LOAD_reading_done)
-               total -= p.len;
-            free(p.filename);
-            if (p.filedata) free(p.filedata);
-            if (p.image) imfree(p.image);
-            if (p.error) free(p.error);
-            if (!locked) stb_mutex_begin(cache_mutex);
-         }
+   if (!(total > max_cache_bytes || occupied_slots > limit))
+      return;
+
+   // sort by lru
+   qsort((void *) list, n, sizeof(*list), ImageFilePtrCompare);
+
+   // now we free earliest slots on the list... 
+   
+   // we could just leave the cache locked the whole time, but will be slightly smarter
+   if (!locked) stb_mutex_begin(cache_mutex);
+
+   for (i=0; i < n && occupied_slots > MIN_CACHE && (occupied_slots > limit || total > max_cache_bytes); ++i) {
+      if (MAIN_OWNS(list[i]) && list[i]->status != LOAD_unused) {
+         // copy the rest of the data out for later use, then clear the existing data
+         ImageFile p = *list[i];
+         list[i]->bail = 1; // force disk to bail if it gets this -- can't happen?
+         list[i]->filename = NULL;
+         list[i]->filedata = NULL;
+         list[i]->len = 0;
+         list[i]->image = NULL;
+         list[i]->error = NULL;
+         list[i]->status = LOAD_unused;
+
+         // we're done touching this entry (but not done with the data),
+         // so release the mutex
+         if (!locked) stb_mutex_end(cache_mutex);
+
+         // now do the potentially slow stuff
+         o(("MAIN: freeing cache: %s\n", p.filename));
+         stb_sdict_remove(file_cache, p.filename, NULL);
+         --occupied_slots; // occupied slots
+         if (p.status == LOAD_available)
+            total -= p.image->stride * p.image->y;
+         else if (p.status == LOAD_reading_done)
+            total -= p.len;
+         free(p.filename);
+         if (p.filedata) free(p.filedata);
+         if (p.image) imfree(p.image);
+         if (p.error) free(p.error);
+
+         // and now we're ready to return to the loop, so reclaim the mutex
+         if (!locked) stb_mutex_begin(cache_mutex);
       }
-      if (!locked) stb_mutex_end(cache_mutex);
-o(("Reduced to %d megabytes\n", total >> 20));
    }
+   if (!locked) stb_mutex_end(cache_mutex);
+   o(("Reduced to %d megabytes\n", total >> 20));
 }
 
+// keep an index within the 'fileinfo' array
 int wrap(int z)
 {
-   int n = stb_arr_len(image_files);
+   int n = stb_arr_len(fileinfo);
    if (z < 0) return z + n;
    while (z >= n) z = z - n;
    return z;
 }
 
+// consider adding a file-load command to the disk-load command
+// if make_current is true, if it's already loaded, make it current
+// (maybe that should be done in advance() instead?)
 void queue_disk_command(DiskCommand *dc, int which, int make_current)
 {
+   char *filename;
    volatile ImageFile *z;
 
    // check if we already have it cached
@@ -1077,23 +1225,35 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
          // it's being loaded/decoded
          return;
       }
+
+      // it's waiting to be decoded, so doesn't need queueing
       if (z->status == LOAD_reading_done)
          return;
+
+      // it's already loaded
       if (z->status == LOAD_available) {
-         if (make_current)
+         if (make_current) {
+            o(("Hey look, make_currentdisk request for %s and it's ready to show!\n", z->filename));
             update_source((ImageFile *) z);
+         }
          return;
       }
+
+      // 
       if (z->status != LOAD_inactive) {
          if (make_current) {
             set_error(z);
          }
          return;
       }
-      // it's a go, use z
+      
+      // z->status == LOAD_inactive
+      // "fall through" to after the if, below
    } else {
       int i,tried_again=FALSE;
-      // find a cache slot
+
+      // didn't already have a cache slot, so find one; we called
+      // flush_cache() before calling this so a slot should be free
       for (i=0; i < MAX_CACHED_IMAGES; ++i)
          if (cache[i].status == LOAD_unused)
             break;
@@ -1101,6 +1261,8 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
          stb_fatal("Internal logic error: no free cache slots, but flush_cache() should free a few");
          return;
       }
+
+      // allocate this slot and fill in the info
       z = &cache[i];
       free(z->filename);
       assert(z->filedata == NULL);
@@ -1109,23 +1271,27 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
       z->status = LOAD_inactive;
       stb_sdict_add(file_cache, filename, (void *) z);
    }
+
+   // now, take the z we already had, or just allocated, prep it for loading
    assert(z->status == LOAD_inactive);
 
-o(("MAIN: proposing %s\n", z->filename));
-   z->status = LOAD_inactive;
+   o(("MAIN: proposing %s\n", z->filename));
+   z->status = LOAD_inactive;     // we still own it for now
    z->image = NULL;
    z->bail = 0;
-   z->lru = fileinfo[which].lru;
+   z->lru = fileinfo[which].lru;  // pass lru value through
 
+   // and now really put it on the command list
    dc->files[dc->num_files++] = (ImageFile *) z;
 }
 
 
+// step through the current file list
 void advance(int dir)
 {
    DiskCommand dc;
    int i;
-   if (image_files == NULL)
+   if (fileinfo == NULL)
       init_filelist();
 
    cur_loc = wrap(cur_loc + dir);
@@ -1136,29 +1302,35 @@ void advance(int dir)
    // set this file to new value
    fileinfo[cur_loc].lru = ++lru_stamp;
 
-   // need to grab the cache
+   flush_cache(FALSE);
+   // we're mucking with the cache like mad, so grab the mutex; it doubles
+   // as a dc_shared mutex, so don't release until we're done with dc_shared
    stb_mutex_begin(cache_mutex);
-   flush_cache(TRUE);
    dc.num_files = 0;
    queue_disk_command(&dc, cur_loc, 1);           // first thing to load: this file
    if (dir) {
       queue_disk_command(&dc, wrap(cur_loc+dir), 0); // second thing to load: the next file (preload)
       queue_disk_command(&dc, wrap(cur_loc-dir), 0); // last thing to load: the previous file (in case it got skipped when they went fast)
    }
+   filename = fileinfo[cur_loc].filename;
 
    if (dc.num_files) {
       dc_shared = dc;
       for (i=0; i < dc.num_files; ++i)
          assert(dc.files[i]->filedata == NULL);
+      // wake up the disk thread if needed
       stb_sem_release(disk_command_queue);
    }
    stb_mutex_end(cache_mutex);
-   // tell loader not to bother with old data
+   // tell disk loader not to bother with older files
    for (i=0; i < MAX_CACHED_IMAGES; ++i)
       if (cache[i].lru < lru_stamp-1)
          cache[i].bail = 1;
 }
 
+// ctrl-O, or initial command if no filename: run
+//   GetOpenFileName(), load the specified filelist,
+//   
 static char filenamebuffer[4096];
 void open_file(void)
 {
@@ -1377,11 +1549,6 @@ void mouse(UINT ev, int x, int y)
 #define VK_SLASH     0xbf
 #endif
 
-int best_lru = 0;
-
-int downsample_cubic = 0;
-int upsample_cubic = 1;
-
 
 int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -1427,6 +1594,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
          }
          if (best) {
+            o(("Post-decode, found a best image, better than any before.\n"));
             update_source(best);
          }
          flush_cache(FALSE);
@@ -1540,11 +1708,6 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                if (cur) frame(cur);
                break;
 
-            case 'C':
-               upsample_cubic = !upsample_cubic;
-               downsample_cubic = !downsample_cubic;
-               break;
-
             case MY_CTRL | VK_OEM_PLUS:
             case MY_CTRL | MY_SHIFT | VK_OEM_PLUS:
                resize(1);
@@ -1579,49 +1742,6 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
 int resize_threads;
 
-void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
-{
-   int cx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-   int cy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-
-   int cx2 = GetSystemMetrics(SM_CXSCREEN);
-   int cy2 = GetSystemMetrics(SM_CYSCREEN);
-
-   if (w <= cx2 && h <= cy2) {
-      // if the image fits on the primary monitor, go for it
-      *w_ideal = w;
-      *h_ideal = h;
-   } else if (w - FRAME*2 <= cx2 && h - FRAME*2 <= cy2) {
-      // if the image fits on the primary monitor with border
-      *w_ideal = w;
-      *h_ideal = h;
-   } else {
-      // will we show more if we use the virtual desktop, rather than just the primary?
-      int w1,h1,w2,h2;
-      compute_size(cx+FRAME*2 ,cy+FRAME*2,w,h,&w1,&h1);
-      compute_size(cx2+FRAME*2,cy2+FRAME*2,w,h,&w2,&h2);
-      if (h1 > h2*1.25 || w1 > w2*1.25) {
-         *w_ideal = stb_min(cx,w1)+FRAME*2;
-         *h_ideal = stb_min(cy,h1)+FRAME*2;
-      } else {
-         *w_ideal = stb_min(cx2,w2)+FRAME*2;
-         *h_ideal = stb_min(cy2,h2)+FRAME*2;
-      }
-      // compute actual size image will be
-      compute_size(*w_ideal, *h_ideal, w,h, &w,&h);
-      w += FRAME*2;
-      h += FRAME*2;
-   }
-
-   if ((cx != cx2 || cy != cy2) && w <= cx2+FRAME*2 && h <= cy2+FRAME*2) {
-      *x = (cx2 - w) >> 1;
-      *y = (cy2 - h) >> 1;
-   } else {
-      *x = (cx - w) >> 1;
-      *y = (cy - h) >> 1;
-   }
-}
-
 int cur_is_current(void)
 {
    if (!cur_filename) return FALSE;
@@ -1648,7 +1768,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
    resize_threads = stb_processor_count();
 
-   resize_threads = 8;
    if (resize_threads > MAX_RESIZE) resize_threads = MAX_RESIZE;
 
    #ifdef _DEBUG
@@ -1954,7 +2073,7 @@ void *image_resize_work(ImageProcess *q)
    return NULL;
 }
 
-void image_resize_old(Image *dest, Image *src)
+void image_resize_bilinear(Image *dest, Image *src)
 {
    ImageProcess proc_buffer[16], *q = stb_temp(proc_buffer, resize_threads * sizeof(*q));
    SplitPoint *p = stb_temp(point_buffer, dest->x * sizeof(*p));
@@ -2058,13 +2177,14 @@ static Color lerp(Color dest, Color src, uint8 a)
 
 MMX int16 three[4] = { 3,3,3,3 };
 
-static void cubicRGBA(uint32 *dest, uint32 *x0, uint32 *x1, uint32 *x2, uint32 *x3, int lerp8, int step_dest, int step_src, int len)
-//static uint32 cubicRGBA(uint32 x0, uint32 x1, uint32 x2, uint32 x3, int lerp8)
+static void cubic_interpolate_span(uint32 *dest,
+                                   uint32 *x0, uint32 *x1, uint32 *x2, uint32 *x3,
+                                   int lerp8, int step_dest, int step_src, int len)
 {
    if (len <= 0) return;
    __asm {
-      // these save/restores shouldn't be necessary... but they seem to be in VC6 opt builds
-      // buggy compiler, or I'm doing something wrong
+      // these save/restores shouldn't be necessary... but they seem to be needed
+      // in VC6 opt builds; either a buggy compiler, or I'm doing something wrong
       push eax
       push ebx
       push ecx
@@ -2179,7 +2299,7 @@ static int cubic(int x0, int x1, int x2, int x3, int lerp8)
    return res;
 }
 
-static void cubicRGBA(Color *dest, Color *x0, Color *x1, Color *x2, Color *x3, int lerp8, int step_dest, int step_src, int len)
+static void cubic_interpolate_span(Color *dest, Color *x0, Color *x1, Color *x2, Color *x3, int lerp8, int step_dest, int step_src, int len)
 {
    int i;
    for (i=0; i < len; ++i) {
@@ -2209,7 +2329,7 @@ struct
 } cubic_work;
 
 #define CUBIC_BLOCK  32
-void * grCubicScaleBitmapX_work(int n)
+void * cubic_interp_1d_x_work(int n)
 {
    int out_w = cubic_work.out_len;
    int x,dx,i,j,k,k_start, k_end;
@@ -2227,7 +2347,7 @@ void * grCubicScaleBitmapX_work(int n)
          int xp = (x >> 16);
          int xw = (x >> 8) & 255;
          if (xp == 0) {
-            cubicRGBA(dest, data+xp,data+xp,data+xp+1,data+xp+2,xw,out->stride,src->stride,k2-k);
+            cubic_interpolate_span(dest, data+xp,data+xp,data+xp+1,data+xp+2,xw,out->stride,src->stride,k2-k);
          } else if (xp >= src->x - 2) {
             if (xp == src->x-1) {
                for (j=k; j < k2; ++j) {
@@ -2236,10 +2356,10 @@ void * grCubicScaleBitmapX_work(int n)
                   dest = PLUS(dest , out->stride);
                }
             } else {
-               cubicRGBA(dest, data+xp-1,data+xp,data+xp+1,data+xp+1,xw,out->stride,src->stride,k2-k);
+               cubic_interpolate_span(dest, data+xp-1,data+xp,data+xp+1,data+xp+1,xw,out->stride,src->stride,k2-k);
             }
          } else {
-            cubicRGBA(dest, data+xp-1,data+xp,data+xp+1,data+xp+2,xw,out->stride,src->stride,k2-k);
+            cubic_interpolate_span(dest, data+xp-1,data+xp,data+xp+1,data+xp+2,xw,out->stride,src->stride,k2-k);
          }
          x += dx;
       }
@@ -2248,7 +2368,7 @@ void * grCubicScaleBitmapX_work(int n)
    return NULL;
 }
 
-Image *grCubicScaleBitmapX(Image *src, int out_w)
+Image *cubic_interp_1d_x(Image *src, int out_w)
 {
    int i;
    cubic_work.out = bmp_alloc(out_w, src->y);
@@ -2258,15 +2378,15 @@ Image *grCubicScaleBitmapX(Image *src, int out_w)
    barrier();
 
    if (resize_threads == 1) {
-      grCubicScaleBitmapX_work(0);
+      cubic_interp_1d_x_work(0);
    } else {
       volatile void *which[MAX_RESIZE];
       for (i=0; i < resize_threads; ++i)
          which[i] = (void *) 1;
       barrier();
       for (i=1; i < resize_threads; ++i)
-         stb_workq(resize_workers, (stb_thread_func) grCubicScaleBitmapX_work, (void *) i, which+i);
-      grCubicScaleBitmapX_work(0);
+         stb_workq(resize_workers, (stb_thread_func) cubic_interp_1d_x_work, (void *) i, which+i);
+      cubic_interp_1d_x_work(0);
 
       for(;;) {
          for (i=1; i < resize_threads; ++i)
@@ -2279,7 +2399,7 @@ Image *grCubicScaleBitmapX(Image *src, int out_w)
    return cubic_work.out;
 }
 
-Image *grCubicScaleBitmapY_work(int n)
+Image *cubic_interp_1d_y_work(int n)
 {
    int y,dy,j,j_end;
    int out_h = cubic_work.out_len;
@@ -2298,12 +2418,12 @@ Image *grCubicScaleBitmapY_work(int n)
       uint32 *data2 = PLUS(data1,src->stride);
       uint32 *data0 = (yp > 0) ? PLUS(data1, - src->stride) : data1;
       uint32 *data3 = (yp < src->y-2) ? PLUS(data2, src->stride) : data2;
-      cubicRGBA(dest, data0, data1, data2, data3, yw, 4,4,out->x);
+      cubic_interpolate_span(dest, data0, data1, data2, data3, yw, 4,4,out->x);
    }
    return NULL;
 }
 
-Image *grCubicScaleBitmapY(Image *src, int out_h)
+Image *cubic_interp_1d_y(Image *src, int out_h)
 {
    int i;
    cubic_work.src = src;
@@ -2313,15 +2433,15 @@ Image *grCubicScaleBitmapY(Image *src, int out_h)
    barrier();
 
    if (resize_threads == 1) {
-      grCubicScaleBitmapY_work(0);
+      cubic_interp_1d_y_work(0);
    } else {
       volatile void *which[MAX_RESIZE];
       for (i=0; i < resize_threads; ++i)
          which[i] = (void *) 1;
       barrier();
       for (i=1; i < resize_threads; ++i)
-         stb_workq(resize_workers, (stb_thread_func) grCubicScaleBitmapY_work, (void *) i, which+i);
-      grCubicScaleBitmapY_work(0);
+         stb_workq(resize_workers, (stb_thread_func) cubic_interp_1d_y_work, (void *) i, which+i);
+      cubic_interp_1d_y_work(0);
 
       for(;;) {
          for (i=1; i < resize_threads; ++i)
@@ -2335,7 +2455,7 @@ Image *grCubicScaleBitmapY(Image *src, int out_h)
 }
 
 // downsampling
-Image *grScaleBitmapOneHalf(Image *src)
+Image *downsample_half(Image *src)
 {
    int i,j, w,h;
    Image *res;
@@ -2363,7 +2483,7 @@ Image *grScaleBitmapOneHalf(Image *src)
    return res;
 }
 
-Image *grScaleBitmapTwoThirds(Image *src)
+Image *downsample_two_thirds(Image *src)
 {
    int i,j, w,h;
    Image *res;
@@ -2420,13 +2540,13 @@ Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
       // maybe should do something smarter here, like find the
       // nearest box size, instead of repetitive powers of two
       while (gx <= (src->x >> 1) && gy <= (src->y >> 1)) {
-         src = grScaleBitmapOneHalf(src);
+         src = downsample_half(src);
          if (to_free) imfree(to_free);
          to_free = src;
       }
 
       if (gx < src->x * 0.666666f && gy < src->y * 0.666666f) {
-         src = grScaleBitmapTwoThirds(src);
+         src = downsample_two_thirds(src);
          if (to_free) imfree(to_free);
          to_free = src;
       }
@@ -2441,14 +2561,14 @@ Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
          return res;
       }
    } else if (upsample ? upsample_cubic : downsample_cubic) {
-      res = grCubicScaleBitmapY(src, gy);
+      res = cubic_interp_1d_y(src, gy);
       if (to_free) imfree(to_free);
       to_free = res;
-      res = grCubicScaleBitmapX(res, gx);
+      res = cubic_interp_1d_x(res, gx);
       imfree(to_free);
     } else {
       #if 1
-      image_resize_old(dest, src);
+      image_resize_bilinear(dest, src);
       if (to_free) imfree(to_free);
       res = NULL;
       #else
@@ -2466,7 +2586,7 @@ Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
 void image_resize(Image *dest, Image *src)
 {
 #if BPP==3
-   image_resize_old(dest, src);
+   image_resize_bilinear(dest, src);
 #else
    int j;
    Image *temp;
