@@ -1,0 +1,113 @@
+//Microsoft Developer Studio generated resource script.
+//
+#include "resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 2 resource.
+//
+#include "afxres.h"
+
+/////////////////////////////////////////////////////////////////////////////
+#undef APSTUDIO_READONLY_SYMBOLS
+
+/////////////////////////////////////////////////////////////////////////////
+// English (U.S.) resources
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
+#ifdef _WIN32
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+#endif //_WIN32
+
+#ifdef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// TEXTINCLUDE
+//
+
+1 TEXTINCLUDE DISCARDABLE 
+BEGIN
+    "resource.h\0"
+END
+
+2 TEXTINCLUDE DISCARDABLE 
+BEGIN
+    "#include ""afxres.h""\r\n"
+    "\0"
+END
+
+3 TEXTINCLUDE DISCARDABLE 
+BEGIN
+    "\r\n"
+    "\0"
+END
+
+#endif    // APSTUDIO_INVOKED
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog
+//
+
+IDD_pref DIALOG DISCARDABLE  0, 0, 161, 141
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "imv(stb) preferences"
+FONT 8, "MS Sans Serif"
+BEGIN
+    DEFPUSHBUTTON   "OK",IDOK,23,119,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,83,119,50,14
+    CONTROL         "High-quality resizing",DIALOG_upsample,"Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP,24,86,76,10
+    EDITTEXT        DIALOG_r1,57,50,19,12,ES_RIGHT | ES_AUTOHSCROLL
+    EDITTEXT        DIALOG_g1,79,50,19,12,ES_RIGHT | ES_AUTOHSCROLL
+    EDITTEXT        DIALOG_b1,101,50,19,12,ES_RIGHT | ES_AUTOHSCROLL
+    RTEXT           "Color 1",IDC_STATIC,28,53,25,12
+    RTEXT           "Color 2",IDC_STATIC,28,65,25,13
+    GROUPBOX        "Background color for transparent images",IDC_STATIC,5,
+                    40,147,42
+    EDITTEXT        DIALOG_r2,57,63,19,12,ES_RIGHT | ES_AUTOHSCROLL
+    EDITTEXT        DIALOG_g2,79,63,19,12,ES_RIGHT | ES_AUTOHSCROLL
+    EDITTEXT        DIALOG_b2,101,63,19,12,ES_RIGHT | ES_AUTOHSCROLL
+    EDITTEXT        DIALOG_cachesize,11,100,21,13,ES_AUTOHSCROLL
+    LTEXT           "Size of image cache in megabytes",IDC_STATIC,36,102,107,
+                    8
+    LTEXT           "",DIALOG_image,45,7,70,28
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// DESIGNINFO
+//
+
+#ifdef APSTUDIO_INVOKED
+GUIDELINES DESIGNINFO DISCARDABLE 
+BEGIN
+    IDD_pref, DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 154
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 134
+    END
+END
+#endif    // APSTUDIO_INVOKED
+
+#endif    // English (U.S.) resources
+/////////////////////////////////////////////////////////////////////////////
+
+
+
+#ifndef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 3 resource.
+//
+
+
+/////////////////////////////////////////////////////////////////////////////
+#endif    // not APSTUDIO_INVOKED
+

@@ -124,6 +124,10 @@ SOURCE=..\imv.c
 # End Source File
 # Begin Source File
 
+SOURCE=..\imv.ico
+# End Source File
+# Begin Source File
+
 SOURCE=..\notes.txt
 
 !IF  "$(CFG)" == "stb_imv - Win32 Release"
@@ -141,6 +145,14 @@ SOURCE=..\notes.txt
 
 !ENDIF 
 
+# End Source File
+# Begin Source File
+
+SOURCE=..\pics.c
+# End Source File
+# Begin Source File
+
+SOURCE=..\pref.rc
 # End Source File
 # Begin Source File
 

@@ -30,6 +30,7 @@
 #include "stb.h"          /*     http://nothings.org/stb.h         */
 #include "stb_image.c"    /*     http://nothings.org/stb_image.c   */
 
+#include "resource.h"
 
 // all programs get the version number from the same place: version.bat
 #define set   static char *
@@ -153,6 +154,7 @@ typedef struct
    int stride;      // distance between rows in bytes  
    int frame;       // does this image have a frame (border)?
    uint8 *pixels;   // pointer to (0,0)th pixel
+   int had_alpha;   // did this have alpha and we statically overwrote it?
 } Image;
 
 enum
@@ -299,6 +301,12 @@ void *diskload_task(void *p)
    }
 }
 
+static unsigned char alpha_background[2][3] =
+{
+   { 200,40,200 },
+   { 150,30,150 },
+};
+
 // given raw decoded data from stbi_load, make it into a proper Image (e.g. creating a
 // windows-compatible bitmap with 4-byte aligned rows and BGR color order)
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image_n)
@@ -309,6 +317,7 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image
    z->y = image_y;
    z->stride = image_x*BPP;
    z->frame = 0;
+   z->had_alpha = (image_n==4);
 
    for (j=0; j < image_y; ++j) {
       for (i=0; i < image_x; ++i) {
@@ -323,13 +332,13 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image
             unsigned char *p = image_data+k;
             int a = (255-p[3]);
             if ((i ^ j) & 8) {
-               p[0] += (((200 - (int) p[0])*a)>>8);
-               p[1] += ((( 40 - (int) p[1])*a)>>8);
-               p[2] += (((200 - (int) p[2])*a)>>8);
+               p[0] += (((alpha_background[0][2] - (int) p[0])*a)>>8);
+               p[1] += (((alpha_background[0][1] - (int) p[1])*a)>>8);
+               p[2] += (((alpha_background[0][0] - (int) p[2])*a)>>8);
             } else {
-               p[0] += (((150 - (int) p[0])*a)>>8);
-               p[1] += ((( 30 - (int) p[1])*a)>>8);
-               p[2] += (((150 - (int) p[2])*a)>>8);
+               p[0] += (((alpha_background[1][2] - (int) p[0])*a)>>8);
+               p[1] += (((alpha_background[1][1] - (int) p[1])*a)>>8);
+               p[2] += (((alpha_background[1][0] - (int) p[2])*a)>>8);
             }
          }
          #endif
@@ -459,6 +468,7 @@ Image *bmp_alloc(int x, int y)
    i->stride += (-i->stride) & 3;
    i->pixels = malloc(i->stride * i->y);
    i->frame = 0;
+   i->had_alpha = 0;
    if (i->pixels == NULL) { free(i); return NULL; }
    return i;
 }
@@ -533,18 +543,18 @@ char helptext_center[88] =
 
 char helptext_left[] =
    "\n\n\n\n"
-   "ESC: exit\n"
-   "ALT-ENTER: toggle size\n"
-   "CTRL-PLUS: zoom in\n"
+   "       ESC: exit\n"
+   " ALT-ENTER: toggle size\n"
+   " CTRL-PLUS: zoom in\n"
    "CTRL-MINUS: zoom out\n"
    "RIGHT, SPACE: next image\n"
    "LEFT, BACKSPACE: previous image\n"
-   "CTRL-O: open image\n"
-   "F: toggle frame\n"
-   "C: toggle resize quality\n"
+   "    CTRL-O: open image\n"
+   "       P: change preferences\n"
+   "      F: toggle frame\n"
    "SHIFT-F: toggle white stripe in frame\n"
    "CTRL-F: toggle both\n"
-   "L: toggle filename label\n"
+   "     L: toggle filename label\n"
    "F1, H, ?: help"
 ;
 
@@ -1302,26 +1312,31 @@ void advance(int dir)
    // set this file to new value
    fileinfo[cur_loc].lru = ++lru_stamp;
 
+   // make sure there's room for new images
    flush_cache(FALSE);
-   // we're mucking with the cache like mad, so grab the mutex; it doubles
-   // as a dc_shared mutex, so don't release until we're done with dc_shared
-   stb_mutex_begin(cache_mutex);
-   dc.num_files = 0;
-   queue_disk_command(&dc, cur_loc, 1);           // first thing to load: this file
-   if (dir) {
-      queue_disk_command(&dc, wrap(cur_loc+dir), 0); // second thing to load: the next file (preload)
-      queue_disk_command(&dc, wrap(cur_loc-dir), 0); // last thing to load: the previous file (in case it got skipped when they went fast)
-   }
-   filename = fileinfo[cur_loc].filename;
 
-   if (dc.num_files) {
-      dc_shared = dc;
-      for (i=0; i < dc.num_files; ++i)
-         assert(dc.files[i]->filedata == NULL);
-      // wake up the disk thread if needed
-      stb_sem_release(disk_command_queue);
+   // we're mucking with the cache like mad, so grab the mutex; it doubles
+   // as a mutex on dc_shared, so don't release until we're done with dc_shared
+   stb_mutex_begin(cache_mutex);
+   {
+      dc.num_files = 0;
+      queue_disk_command(&dc, cur_loc, 1);           // first thing to load: this file
+      if (dir) {
+         queue_disk_command(&dc, wrap(cur_loc+dir), 0); // second thing to load: the next file (preload)
+         queue_disk_command(&dc, wrap(cur_loc-dir), 0); // last thing to load: the previous file (in case it got skipped when they went fast)
+      }
+      filename = fileinfo[cur_loc].filename;
+
+      if (dc.num_files) {
+         dc_shared = dc;
+         for (i=0; i < dc.num_files; ++i)
+            assert(dc.files[i]->filedata == NULL);
+         // wake up the disk thread if needed
+         stb_sem_release(disk_command_queue);
+      }
    }
    stb_mutex_end(cache_mutex);
+
    // tell disk loader not to bother with older files
    for (i=0; i < MAX_CACHED_IMAGES; ++i)
       if (cache[i].lru < lru_stamp-1)
@@ -1427,8 +1442,8 @@ enum
 #define ismode(x)     (dragmode == x)
 #define anymode()     !ismode(MODE_none)
 
-static int ex,ey;   // original mousedown location for snapping to that
-static int ex2,ey2; // original mousedown location relative to bottom right
+static int ex,ey;   // mousedown location relative to top left
+static int ex2,ey2; // mousedown location relative to bottom right
 static int wx,wy;
 static int rx,ry,rx2,ry2;
 
@@ -1541,6 +1556,178 @@ void mouse(UINT ev, int x, int y)
    }
 }
 
+static unsigned int physmem;
+char *reg_root = "Software\\SilverSpaceship\\imv";
+int reg_get(char *str, void *data, int len)
+{
+   static char buffer[128];
+   int result=0;
+   HKEY z=0;
+   if (ERROR_SUCCESS == RegOpenKeyEx(HKEY_LOCAL_MACHINE, reg_root, 0, KEY_READ, &z))
+   {
+      unsigned int type;
+      if (ERROR_SUCCESS == RegQueryValueEx(z, str, 0, &type, data, &len))
+         if (type == REG_BINARY)
+            result = 1;
+   }
+   if (z)
+      RegCloseKey(z);
+   return result;
+}
+
+int reg_set(char *str, void *data, int len)
+{
+   int result = 0;
+   HKEY z=0;
+   if (ERROR_SUCCESS == RegCreateKeyEx(HKEY_LOCAL_MACHINE, reg_root, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, NULL, &z, NULL))
+   {
+      if (ERROR_SUCCESS == RegSetValueEx(z, str, 0, REG_BINARY, data, len))
+         result = 1;
+   }
+   if (z)
+      RegCloseKey(z);
+   return result;
+}
+
+void reg_save(void)
+{
+   int temp = max_cache_bytes >> 20;
+   reg_set("ac", &alpha_background, 6);
+   reg_set("up", &upsample_cubic, 4);
+   reg_set("cache", &temp, 4);
+}
+
+void reg_load(void)
+{
+   int temp;
+   reg_get("ac", &alpha_background, 6);
+   reg_get("up", &upsample_cubic, 4);
+   if (reg_get("cache", &temp, 4))
+      max_cache_bytes = temp << 20;
+}
+
+static HWND dialog;
+static LRESULT send_dialog(int id, UINT msg, WPARAM p1, LPARAM p2)
+{
+   return SendMessage(GetDlgItem(dialog,id),msg,p1,p2);
+}
+
+static void set_dialog_number(int id, int value)
+{
+   char buffer[16];
+   sprintf(buffer, "%d", value);
+   SetWindowText(GetDlgItem(dialog, id), buffer);
+}
+
+static int get_dialog_number(int id)
+{
+   char buffer[32];
+   int n = GetWindowText(GetDlgItem(dialog,id), buffer, sizeof(buffer)-1);
+   buffer[n] = 0;
+   return atoi(buffer);
+}
+
+static void dialog_clamp(int id, int low, int high)
+{
+   int x = get_dialog_number(id);
+   if (x < low) x = low;
+   else if (x > high) x = high;
+   else return;
+   set_dialog_number(id,x);
+}
+
+extern unsigned char *rom_images[];
+BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
+{
+   static Image *pref_image;
+   int i;
+   dialog = hdlg;
+   switch(imsg)
+   {
+      case WM_INITDIALOG: {
+         int n = ((rand() >> 6) % 3);
+         {
+            int x,y,i,j,k;
+            uint8 *data = stbi_load_from_memory(rom_images[n],2000,&x,&y,NULL,1);
+            pref_image = bmp_alloc(x,y);
+            for (j=0; j < y; ++j)
+               for (i=0; i < x; ++i)
+                  for (k=0; k < 3; ++k)
+                     pref_image->pixels[pref_image->stride*j + BPP*i + k] = data[j*x+i];
+         }
+
+         send_dialog(DIALOG_upsample, BM_SETCHECK, upsample_cubic, 0);
+         for (i=0; i < 6; ++i)
+            set_dialog_number(DIALOG_r1+i, alpha_background[0][i]);
+         set_dialog_number(DIALOG_cachesize, max_cache_bytes >> 20);
+         return TRUE;
+      }
+      case WM_PAINT: {
+         RECT z;
+         int x,y;
+         HWND pic = GetDlgItem(hdlg, DIALOG_image);
+         GetWindowRect(pic,&z);
+         InvalidateRect(pic,NULL,TRUE);
+         UpdateWindow(pic);
+         x = (z.right - z.left - pref_image->x) >> 1;
+         y = (z.bottom - z.top - pref_image->y) >> 1;
+         platformDrawBitmap(GetDC(pic), x,y,pref_image->pixels,pref_image->x,pref_image->y,pref_image->stride,0);
+         break;
+      }
+      case WM_COMMAND: {
+         int k = LOWORD(wparam);
+         int n = HIWORD(wparam);
+         switch(k) {
+            // validate the dialog entries
+            case DIALOG_r1: case DIALOG_g1: case DIALOG_b1:
+            case DIALOG_r2: case DIALOG_g2: case DIALOG_b2:
+               if (n == EN_KILLFOCUS) dialog_clamp(k,0,255);
+               break;
+            case DIALOG_cachesize:
+               if (n == EN_KILLFOCUS) dialog_clamp(k,1,(physmem>>22)*3); // 3/4 of phys mem
+               break;
+            case IDOK: {
+               unsigned char cur[6];
+               int up = upsample_cubic;
+               memcpy(cur, alpha_background, 6);
+               // load the settings back out of the dialog box
+               for (i=0; i < 6; ++i)
+                  alpha_background[0][i] = get_dialog_number(DIALOG_r1+i);
+               max_cache_bytes = get_dialog_number(DIALOG_cachesize) << 20;
+               upsample_cubic = send_dialog(DIALOG_upsample, BM_GETCHECK,0,0) == BST_CHECKED;
+               if (memcmp(alpha_background, cur, 6)) {
+                  stb_mutex_begin(cache_mutex);
+                  for (i=0; i < MAX_CACHED_IMAGES; ++i) {
+                     if (cache[i].status == LOAD_available) {
+                        if (cache[i].image->had_alpha) {
+                           stb_sdict_remove(file_cache, cache[i].filename, NULL);
+                           free(cache[i].filename);
+                           imfree(cache[i].image);
+                           cache[i].status = LOAD_unused;
+                           cache[i].image = NULL;
+                           cache[i].filename = NULL;
+                        }
+                     }
+                  }
+                  stb_mutex_end(cache_mutex);
+                  advance(0);
+               }
+               reg_save();
+               /* FALL THROUGH */
+            }
+            case IDCANCEL:
+               imfree(pref_image);
+               pref_image = NULL;
+               EndDialog(hdlg,0);
+               return TRUE;
+         }
+         break;
+      }
+   }
+   return FALSE;
+}
+
+
 #ifndef VK_OEM_PLUS
 #define VK_OEM_PLUS  0xbb
 #define VK_OEM_MINUS 0xbd
@@ -1549,6 +1736,7 @@ void mouse(UINT ev, int x, int y)
 #define VK_SLASH     0xbf
 #endif
 
+HINSTANCE inst;
 
 int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -1708,6 +1896,11 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                if (cur) frame(cur);
                break;
 
+            case 'P':
+            case 'P' | MY_CTRL:
+               DialogBox(inst, MAKEINTRESOURCE(IDD_pref), hWnd, PrefDlgProc);
+               break;
+
             case MY_CTRL | VK_OEM_PLUS:
             case MY_CTRL | MY_SHIFT | VK_OEM_PLUS:
                resize(1);
@@ -1728,7 +1921,6 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          }
          break;
       }
-
       case WM_DESTROY:
          PostQuitMessage (0);
          break;
@@ -1760,11 +1952,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    MSG       msg;
    WNDCLASSEX  wndclass;
    HWND      hWnd;
-   int physmem;
 
    int image_x, image_y;
    unsigned char *image_data;
    int image_n;
+
+   inst = hInstance;
 
    resize_threads = stb_processor_count();
 
@@ -1775,9 +1968,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    #endif
 
    GlobalMemoryStatus(&mem);
+   if (mem.dwTotalPhys == 0) --mem.dwTotalPhys;
    physmem = mem.dwTotalPhys;
    max_cache_bytes = physmem / 6;
    if (max_cache_bytes > 256 << 20) max_cache_bytes = 256 << 20;
+
+   reg_load();
 
    strcat(helptext_center, VERSION);
 
@@ -1811,7 +2007,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
       label_font = CreateFontIndirect(&lf);
    }
 
-
+   srand(time(NULL));
 
    if (argc < 1) {
       OPENFILENAME o;
