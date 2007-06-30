@@ -19,6 +19,7 @@ CFG=stb_imv - Win32 Debug
 !MESSAGE 
 !MESSAGE "stb_imv - Win32 Release" (based on "Win32 (x86) Application")
 !MESSAGE "stb_imv - Win32 Debug" (based on "Win32 (x86) Application")
+!MESSAGE "stb_imv - Win32 Debug Opt" (based on "Win32 (x86) Application")
 !MESSAGE 
 
 # Begin Project
@@ -82,12 +83,41 @@ LINK32=link.exe
 # ADD BASE LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /nologo /subsystem:windows /debug /machine:I386 /pdbtype:sept
 # ADD LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /nologo /subsystem:windows /debug /machine:I386 /pdbtype:sept
 
+!ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug Opt"
+
+# PROP BASE Use_MFC 0
+# PROP BASE Use_Debug_Libraries 0
+# PROP BASE Output_Dir "stb_imv___Win32_Debug_Opt"
+# PROP BASE Intermediate_Dir "stb_imv___Win32_Debug_Opt"
+# PROP BASE Target_Dir ""
+# PROP Use_MFC 0
+# PROP Use_Debug_Libraries 0
+# PROP Output_Dir "stb_imv___Win32_Debug_Opt"
+# PROP Intermediate_Dir "stb_imv___Win32_Debug_Opt"
+# PROP Ignore_Export_Lib 0
+# PROP Target_Dir ""
+# ADD BASE CPP /nologo /G6 /MD /W3 /GX /O2 /D "WIN32" /D "NDEBUG" /D "_WINDOWS" /D "_MBCS" /FD /c
+# SUBTRACT BASE CPP /YX
+# ADD CPP /nologo /G6 /MD /W3 /GX /Z7 /O2 /D "WIN32" /D "NDEBUG" /D "_WINDOWS" /D "_MBCS" /FD /c
+# SUBTRACT CPP /YX
+# ADD BASE MTL /nologo /D "NDEBUG" /mktyplib203 /win32
+# ADD MTL /nologo /D "NDEBUG" /mktyplib203 /win32
+# ADD BASE RSC /l 0x409 /d "NDEBUG"
+# ADD RSC /l 0x409 /d "NDEBUG"
+BSC32=bscmake.exe
+# ADD BASE BSC32 /nologo
+# ADD BSC32 /nologo
+LINK32=link.exe
+# ADD BASE LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /nologo /subsystem:windows /machine:I386
+# ADD LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /nologo /subsystem:windows /debug /machine:I386
+
 !ENDIF 
 
 # Begin Target
 
 # Name "stb_imv - Win32 Release"
 # Name "stb_imv - Win32 Debug"
+# Name "stb_imv - Win32 Debug Opt"
 # Begin Source File
 
 SOURCE=..\imv.c
@@ -95,7 +125,22 @@ SOURCE=..\imv.c
 # Begin Source File
 
 SOURCE=..\notes.txt
+
+!IF  "$(CFG)" == "stb_imv - Win32 Release"
+
 # PROP Exclude_From_Build 1
+
+!ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug"
+
+# PROP Exclude_From_Build 1
+
+!ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug Opt"
+
+# PROP BASE Exclude_From_Build 1
+# PROP Exclude_From_Build 1
+
+!ENDIF 
+
 # End Source File
 # Begin Source File
 
@@ -104,7 +149,22 @@ SOURCE=..\stb.h
 # Begin Source File
 
 SOURCE=..\version.bat
+
+!IF  "$(CFG)" == "stb_imv - Win32 Release"
+
 # PROP Exclude_From_Build 1
+
+!ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug"
+
+# PROP Exclude_From_Build 1
+
+!ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug Opt"
+
+# PROP BASE Exclude_From_Build 1
+# PROP Exclude_From_Build 1
+
+!ENDIF 
+
 # End Source File
 # End Target
 # End Project

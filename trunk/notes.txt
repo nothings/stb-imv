@@ -1,7 +1,8 @@
   Version 0.57
     * feature: cubic image resampling
+    * bugfix: advancing to pre-loaded image then retreated to previous image
     * bugfix: occasional error when advancing to image that was about to be decoded
-    * bugfix: comment code
+    * bugfix: commented about 75% of code
     * bugfix: fix logic for fitting large images onscreen to not stop a few pixels short
 
   Version 0.56
