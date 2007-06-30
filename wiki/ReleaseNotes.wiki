@@ -8,7 +8,7 @@ This is a beta version, targetting the eventual milestones:
 
 = Release Notes =
 
-  Version 0.90: Beta 1
+  Version 0.90: Beta 1 (2007-06-30)
     * bugfix: user-friendlier error messages
     * feature: save preferences to registry
     * feature: preferences dialog
