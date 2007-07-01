@@ -1,4 +1,4 @@
-+@echo off
+@echo off
 call version.bat
 
 rem # Update ReleaseNotes on wiki
