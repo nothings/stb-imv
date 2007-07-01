@@ -1,11 +1,22 @@
-  Version 0.57
+  Version 0.91: Beta 2 (2007-07-01)
+    * feature: allow changing the label font size
+    * internal: various refactorings to clean up the code
+    * bugfix: finish commenting code (except resizer)
+    * bugfix: fix tiny leak closing the preferences dialog with the close button
+
+  Version 0.90: Beta 1 (2007-06-30)
+    * bugfix: user-friendlier error messages
+    * feature: save preferences to registry
+    * feature: preferences dialog
+
+  Version 0.57 (2007-06-29)
     * feature: cubic image resampling
     * bugfix: advancing to pre-loaded image then retreated to previous image
     * bugfix: occasional error when advancing to image that was about to be decoded
     * bugfix: commented about 75% of code
     * bugfix: fix logic for fitting large images onscreen to not stop a few pixels short
 
-  Version 0.56
+  Version 0.56 (2007-06-27)
     * bugfix: stb_image wouldn't load jpegtran output (which is invalid JFIF)
 
   Version 0.55 (2007-06-27)

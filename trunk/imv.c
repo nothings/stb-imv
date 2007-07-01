@@ -45,7 +45,7 @@ void error(char *str) { MessageBox(NULL, str, "imv(stb) error", MB_OK); }
 
 // OutputDebugString with varargs, can be compiled out
 #ifdef _DEBUG
-int do_debug;
+int do_debug=1;
 void ods(char *str, ...)
 {
    if (do_debug) {
@@ -551,7 +551,7 @@ char helptext_left[] =
    "CTRL-MINUS: zoom out\n"
    "RIGHT, SPACE: next image\n"
    "LEFT, BACKSPACE: previous image\n"
-   "    CTRL-O: open image\n"
+   "  (CTRL-) O: open image\n"
    "       P: change preferences\n"
    "      F: toggle frame\n"
    "SHIFT-F: toggle white stripe in frame\n"
@@ -577,11 +577,8 @@ char helptext_right[] =
 // looks a little nicer so why not
 void draw_nice(HDC hdc, char *text, RECT *rect, uint flags)
 {
-#if 1
    int i,j;
    SetTextColor(hdc, RGB(80,80,80));
-   //for (i=-1; i <= 1; i += 1)
-   //for (j=-1; j <= 1; j += 1)
    for (i=2; i >= 1; i -= 1)
    for (j=2; j >= 1; j -= 1)
    {
@@ -591,7 +588,6 @@ void draw_nice(HDC hdc, char *text, RECT *rect, uint flags)
          SetTextColor(hdc, RGB(0,0,0));
       DrawText(hdc, text, -1, &r, flags);
    }
-#endif
    SetTextColor(hdc, RGB(255,255,255));
    DrawText(hdc, text, -1, rect, flags);
 }
@@ -613,6 +609,20 @@ void set_error(volatile ImageFile *z)
 }
 
 HFONT label_font;
+int label_font_height=12;
+
+// build the font for the filename label
+void build_label_font(void)
+{
+   LOGFONT lf;
+   memset(&lf, 0, sizeof(lf));
+   lf.lfHeight       = label_font_height;
+   lf.lfOutPrecision = OUT_TT_PRECIS; // prefer truetype to raster fonts
+   strcpy(lf.lfFaceName, "Times New Roman");
+   if (label_font) DeleteObject(label_font);
+   label_font = CreateFontIndirect(&lf);
+}
+
 int show_frame = TRUE;   // show border or not?
 int show_label = FALSE;  // display the help text or not
 
@@ -1029,7 +1039,7 @@ void toggle_frame(void)
 int best_lru = 0;
 
 // when we change which file is the one being viewed/resized,
-// call this function
+// call this function to update our globals and fit to window
 void update_source(ImageFile *q)
 {
    source = q->image;
@@ -1251,7 +1261,7 @@ void queue_disk_command(DiskCommand *dc, int which, int make_current)
          return;
       }
 
-      // 
+      // if it's not inactive and none of the above, it's an error
       if (z->status != LOAD_inactive) {
          if (make_current) {
             set_error(z);
@@ -1346,8 +1356,10 @@ void advance(int dir)
 }
 
 // ctrl-O, or initial command if no filename: run
-//   GetOpenFileName(), load the specified filelist,
-//   
+//   GetOpenFileName(), set as the active filename,
+//   load the specified filelist, set cur_loc into
+//   the filelist, and force it to load (and prefetch)
+//   with 'advance'
 static char filenamebuffer[4096];
 void open_file(void)
 {
@@ -1368,18 +1380,31 @@ void open_file(void)
    advance(0);
 }
 
-
+// cleaner casting in C--remember, C macros of the form "foo()" don't
+// conflict with uses for 'foo' without a following open parenthesis,
+// so this doesn't cause problems
 #define int(x)  ((int) (x))
 
+
+// discrete resize operation (from keyboard or mousewheel):
+//   we want to resize in nice steps, but finer grained than 2x at a time.
+//   so we resize at sqrt(2) at a time. to prevent rounding errors (so that
+//   when you size up and back down to 1:1, so it's really 1:1), we actually
+//   compute a 'zoom factor' that's log2, so zoom=0 is unzoomed, zoom=1 is
+//   zoomed 2x in each dimension.
 void resize(int step)
 {
-   // first characterize the current size relative to the raw size
    int x = source->x, y = source->y;
+
    float s;
    int x2,y2;
-   int zoom=0;
+   int zoom=0;  // this is log2(zoom_factor)*2; that is, a 0=1x, 2=2x, 4=4x, 6=8x
 
+   // if we have a current image, use that
    if (cur) {
+      // first characterize the current size relative to the raw size
+      // we do this by linearly probing possible values for zoom
+      // @TODO: refactor to combine these loops
       if (cur->x > source->x + FRAME*2 || cur->y > source->y + FRAME*2) {
          for(;;) {
             s = (float) pow(2, zoom/2.0f + 0.25f);
@@ -1409,6 +1434,7 @@ void resize(int step)
          y2 = int(y*s) + 2*FRAME;
       } while (x2 == cur->x || y2 == cur->y);
    } else {
+      // if no current image (e.g. an error), just resize relative to current in power-of-two steps
       RECT rect;
       GetAdjustedWindowRect(win, &rect);
       x2 = rect.right - rect.left;
@@ -1417,10 +1443,10 @@ void resize(int step)
          x2 <<= 1, y2 <<= 1;
       if (step < 0 && x2 >= 64 && y2 >= 64)
          x2 >>= 1, y2 >>= 1;
-
    }
 
    {
+      // compute top left to keep same center
       RECT rect;
       GetAdjustedWindowRect(win, &rect);
       x = (rect.left + rect.right)>>1;
@@ -1433,6 +1459,7 @@ void resize(int step)
    display_mode = zoom==0 ? DISPLAY_actual : DISPLAY_current;
 }
 
+// when mouse button is down, what mode are we in?
 enum
 {
    MODE_none,
@@ -1440,42 +1467,50 @@ enum
    MODE_resize,
 } dragmode;
 
-#define setmode(x)    (dragmode = x)
-#define ismode(x)     (dragmode == x)
+#define setmode(x)    (dragmode = (x))
+#define ismode(x)     (dragmode == (x))
 #define anymode()     !ismode(MODE_none)
 
 static int ex,ey;   // mousedown location relative to top left
 static int ex2,ey2; // mousedown location relative to bottom right
-static int wx,wy;
-static int rx,ry,rx2,ry2;
+static int rx,ry;   // sides that are being resized
 
+// compute the borders to the resize-vs-move regions (e.g. for mouse cursor)
 static void cursor_regions(int *x0, int *y0, int *x1, int *y1)
 {
    RECT rect;
-   int w,h,w2,h2;
-   GetWindowRect(win, &rect);
-   w = rect.right - rect.left;
-   h = rect.bottom - rect.top;
+   int w,h,w2;
+   GetClientRect(win, &rect);
+   // client dimensions
+   w = rect.right;
+   h = rect.bottom;
+
+   // size of resize regions is identical in both axes, so
+   // use smaller window size
+   w = stb_min(w,h);
+
    // compute size of handles
-   w2 = w >> 4; h2 = h >> 4;
-   if (w2 < 12) {
-      w2 = w >> 2;
-      if (w2 < 4) w2 = w >> 1;
-   } else if (w2 > 100) w2 = 100;
-   if (h2 < 12) {
-      h2 = h >> 2;
-      if (h2 < 4) h2 = h >> 1;
-   } else if (h2 > 100) h2 = 100;
-   if (h2 < w2) w2 = h2;
-   if (w2 < h2) h2 = w2;
+   // this is a pretty ad-hoc logic that is designed to:
+   //   - make them bigger with bigger windows, so easier to grab
+   //     - but not too big
+   //   - make them smaller with smaller windows, so there's still an ample 'move' region
+   //     - but not too small
+   if      (w  <   16) w2 = w >> 1;
+   else if (w  <  200) w2 = w >> 2;
+   else if (w  <  800) w2 = w >> 3;
+   else if (w  < 1600) w2 = w >> 4;
+   else                w2 = 100;
+
    *x0 = w2;
    *x1 = w - w2;
-   *y0 = h2;
-   *y1 = h - h2;
+   *y0 = w2;
+   *y1 = h - w2;
 }
 
+// static cursor cache of standard windows cursor for resizing
 HCURSOR c_def, c_ne_sw, c_e_w, c_nw_se, c_n_s;
- 
+
+// given the cursor position in client coordinates, set the cursor shape
 void set_cursor(int x, int y)
 {
    int x0,y0,x1,y1;
@@ -1489,27 +1524,35 @@ void set_cursor(int x, int y)
    else SetCursor(c_def);
 }
 
+// all windows mouse messages that involve the cursor position route here
+// (i.e. all mouse messages except mousewheel)
 void mouse(UINT ev, int x, int y)
 {
    switch (ev) {
       case WM_LBUTTONDBLCLK:
          toggle_display();
          break;
+
       case WM_LBUTTONDOWN:
+         // if we're not in drag/size (and how could we be?!?)
          if (!anymode()) {
             RECT rect;
             int x0,y0,x1,y1;
+
+            // determine which region the user clicked in; there are 9 'quadrants',
+            // three in each dimension, so we measure each dimension separately
             cursor_regions(&x0,&y0,&x1,&y1);
-            rx = ry = 0;
-            if (x < x0) rx = -1;
-            if (x > x1) rx =  1;
-            if (y < y0) ry = -1;
-            if (y > y1) ry =  1;
+            rx = (x < x0) ? -1 : (x > x1);
+            ry = (y < y0) ? -1 : (y > y1);
+            // if the middle region it's a drag; any other region is a resize
             if (rx || ry)
                setmode(MODE_resize);
             else
                setmode(MODE_drag);
+            // capture the mouse until they let go
             SetCapture(win);
+            // record the position of the mouse cursor relative to the window
+            // sides, so we can resize properly
             GetAdjustedWindowRect(win, &rect);
             ex = x;
             ey = y;
@@ -1517,48 +1560,64 @@ void mouse(UINT ev, int x, int y)
             ey2 = y - (rect.bottom-rect.top);
          }
          break;
+
       case WM_MOUSEMOVE:
          switch(dragmode) {
             default: assert(0);
             case MODE_none:
                break;
+
+            // in drag mode, a mouse move just moves the window 
             case MODE_drag: {
                RECT rect;
                GetWindowRect(win, &rect);
                MoveWindow(win, rect.left + x-ex, rect.top + y-ey, rect.right - rect.left, rect.bottom - rect.top, TRUE);
-               set_cursor(x,y);
                break;
             }
+
+
             case MODE_resize: {
                RECT rect;
-               GetAdjustedWindowRect(win, &rect);
                assert(rx || ry);
-               display_mode = DISPLAY_current;
 
+               GetAdjustedWindowRect(win, &rect);
+               display_mode = DISPLAY_current; // resizing the window forces it out of 'actual' mode
+
+               // "LIMIT" controls how small a window can be in each dimension
                #define LIMIT 16
-               if (rx < 0) rect.left   = stb_min(rect.left+x-ex, rect.right-LIMIT);
-               if (rx > 0) rect.right  = stb_max(rect.left+LIMIT, rect.left+x-ex2);
-               if (ry < 0) rect.top    = stb_min(rect.top+y-ey, rect.bottom-LIMIT);
-               if (ry > 0) rect.bottom = stb_max(rect.top+LIMIT, rect.top+y-ey2);
+
+               // for each direction we're resizing, compute the new position of that edge
+               if (rx < 0) rect.left   = stb_min(rect.left+x-ex , rect.right  - LIMIT);
+               if (rx > 0) rect.right  = stb_max(rect.left+x-ex2, rect.left   + LIMIT);
+               if (ry < 0) rect.top    = stb_min(rect.top +y-ey , rect.bottom - LIMIT);
+               if (ry > 0) rect.bottom = stb_max(rect.top +y-ey2, rect.top    + LIMIT);
+
+               // then force the window to resize to the new rect
                enqueue_resize(rect.left, rect.top, rect.right-rect.left, rect.bottom-rect.top);
                break;
             }
          }
          break;
+
       case WM_RBUTTONUP:
+         // right mouse click when not modal exits
          if (!anymode())
             exit(0);
+
          // otherwise, disrupt a modal operation
+
          /* FALLTHROUGH */
+
       case WM_LBUTTONUP:
          ReleaseCapture();
          setmode(MODE_none);
-         set_cursor(x,y);
+         set_cursor(x,y); // return cursor to normal setting
          break;
    }
 }
 
-static unsigned int physmem;
+static unsigned int physmem; // available physical memory according to GlobalMemoryStatus
+
 char *reg_root = "Software\\SilverSpaceship\\imv";
 int reg_get(char *str, void *data, int len)
 {
@@ -1591,12 +1650,16 @@ int reg_set(char *str, void *data, int len)
    return result;
 }
 
+// we use very short strings for these to avoid wasting space, since
+// people shouldn't be mucking with them directly anyway!
 void reg_save(void)
 {
    int temp = max_cache_bytes >> 20;
    reg_set("ac", &alpha_background, 6);
    reg_set("up", &upsample_cubic, 4);
    reg_set("cache", &temp, 4);
+   reg_set("lfs", &label_font_height, 4);
+   reg_set("label", &show_label, 4);
 }
 
 void reg_load(void)
@@ -1604,16 +1667,15 @@ void reg_load(void)
    int temp;
    reg_get("ac", &alpha_background, 6);
    reg_get("up", &upsample_cubic, 4);
+   reg_get("lfs", &label_font_height, 4);
+   reg_get("label", &show_label, 4);
    if (reg_get("cache", &temp, 4))
       max_cache_bytes = temp << 20;
 }
 
-static HWND dialog;
-static LRESULT send_dialog(int id, UINT msg, WPARAM p1, LPARAM p2)
-{
-   return SendMessage(GetDlgItem(dialog,id),msg,p1,p2);
-}
+static HWND dialog; // preferences dialog
 
+// set an edit control's text from an integer
 static void set_dialog_number(int id, int value)
 {
    char buffer[16];
@@ -1621,6 +1683,7 @@ static void set_dialog_number(int id, int value)
    SetWindowText(GetDlgItem(dialog, id), buffer);
 }
 
+// get an edit control's text as an integer
 static int get_dialog_number(int id)
 {
    char buffer[32];
@@ -1629,6 +1692,8 @@ static int get_dialog_number(int id)
    return atoi(buffer);
 }
 
+// clamp an edit control's text into an integer range (and
+// remove non-integer chacters)
 static void dialog_clamp(int id, int low, int high)
 {
    int x = get_dialog_number(id);
@@ -1638,39 +1703,52 @@ static void dialog_clamp(int id, int low, int high)
    set_dialog_number(id,x);
 }
 
-extern unsigned char *rom_images[];
+extern unsigned char *rom_images[]; // preference images
+
+// preferences dialog windows procedure
 BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
 {
    static Image *pref_image;
    int i;
-   dialog = hdlg;
+
+   dialog = hdlg; // store dialog handle to not pass it to above functions
+
    switch(imsg)
    {
       case WM_INITDIALOG: {
+         // pick a random preference image
          int n = ((rand() >> 6) % 3);
-         {
-            int x,y,i,j,k;
-            uint8 *data = stbi_load_from_memory(rom_images[n],2000,&x,&y,NULL,1);
-            pref_image = bmp_alloc(x,y);
+         int x,y,i,j,k;
+         // decode it
+         uint8 *data = stbi_load_from_memory(rom_images[n],2000,&x,&y,NULL,1);
+         pref_image = bmp_alloc(x,y);
+         if (data && pref_image) {
+            // convert monochrome to BGR
             for (j=0; j < y; ++j)
                for (i=0; i < x; ++i)
                   for (k=0; k < 3; ++k)
                      pref_image->pixels[pref_image->stride*j + BPP*i + k] = data[j*x+i];
          }
 
-         send_dialog(DIALOG_upsample, BM_SETCHECK, upsample_cubic, 0);
+         // copy preferences into dialog
+         SendMessage(GetDlgItem(hdlg, DIALOG_upsample), BM_SETCHECK, upsample_cubic, 0);
+         SendMessage(GetDlgItem(hdlg, DIALOG_showlabel), BM_SETCHECK, show_label, 0);
          for (i=0; i < 6; ++i)
             set_dialog_number(DIALOG_r1+i, alpha_background[0][i]);
          set_dialog_number(DIALOG_cachesize, max_cache_bytes >> 20);
+         set_dialog_number(DIALOG_labelheight, label_font_height);
          return TRUE;
       }
       case WM_PAINT: {
+         // draw the preferences image
          RECT z;
          int x,y;
          HWND pic = GetDlgItem(hdlg, DIALOG_image);
          GetWindowRect(pic,&z);
+         // not clear why these next two lines work/are required, but it's what petzold does
          InvalidateRect(pic,NULL,TRUE);
          UpdateWindow(pic);
+         // center it
          x = (z.right - z.left - pref_image->x) >> 1;
          y = (z.bottom - z.top - pref_image->y) >> 1;
          platformDrawBitmap(GetDC(pic), x,y,pref_image->pixels,pref_image->x,pref_image->y,pref_image->stride,0);
@@ -1680,7 +1758,8 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
          int k = LOWORD(wparam);
          int n = HIWORD(wparam);
          switch(k) {
-            // validate the dialog entries
+            // validate the dialog entries into range and numeric only, when
+            // they lose focus only
             case DIALOG_r1: case DIALOG_g1: case DIALOG_b1:
             case DIALOG_r2: case DIALOG_g2: case DIALOG_b2:
                if (n == EN_KILLFOCUS) dialog_clamp(k,0,255);
@@ -1688,15 +1767,24 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
             case DIALOG_cachesize:
                if (n == EN_KILLFOCUS) dialog_clamp(k,1,(physmem>>22)*3); // 3/4 of phys mem
                break;
+            case DIALOG_labelheight:
+               if (n == EN_KILLFOCUS) dialog_clamp(k,1,200);
+               break;
+
             case IDOK: {
+               // user clicked ok... copy out current values to check for changes
                unsigned char cur[6];
-               int up = upsample_cubic;
                memcpy(cur, alpha_background, 6);
+
                // load the settings back out of the dialog box
                for (i=0; i < 6; ++i)
                   alpha_background[0][i] = get_dialog_number(DIALOG_r1+i);
                max_cache_bytes = get_dialog_number(DIALOG_cachesize) << 20;
-               upsample_cubic = send_dialog(DIALOG_upsample, BM_GETCHECK,0,0) == BST_CHECKED;
+               label_font_height = get_dialog_number(DIALOG_labelheight);
+               upsample_cubic = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_upsample ), BM_GETCHECK,0,0);
+               show_label     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showlabel), BM_GETCHECK,0,0);
+
+               // if alpha_background changed, clear the cache of any images that used it                
                if (memcmp(alpha_background, cur, 6)) {
                   stb_mutex_begin(cache_mutex);
                   for (i=0; i < MAX_CACHED_IMAGES; ++i) {
@@ -1712,32 +1800,51 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                      }
                   }
                   stb_mutex_end(cache_mutex);
+                  // force a reload of the current image
                   advance(0);
                }
+
+               // save the data out to the registry
                reg_save();
+
+               // rebuild the label font
+               build_label_font();
+
+               // redraw window -- only needed if changed label state, but we can live with always
+               InvalidateRect(win, NULL, FALSE);
+
                /* FALL THROUGH */
             }
             case IDCANCEL:
-               imfree(pref_image);
-               pref_image = NULL;
                EndDialog(hdlg,0);
                return TRUE;
          }
          break;
       }
+
+      case WM_DESTROY:
+         // we're closing the dialog, so clear the cached image
+         imfree(pref_image);
+         pref_image = NULL;
+         break;
    }
    return FALSE;
 }
 
-
+// missing VK definitions in old compiler
 #ifndef VK_OEM_PLUS
 #define VK_OEM_PLUS  0xbb
 #define VK_OEM_MINUS 0xbd
 #endif
+
 #ifndef VK_SLASH
 #define VK_SLASH     0xbf
 #endif
 
+// ok, surely windows doesn't BY DESIGN require you to store your
+// HINSTANCE in a global, does it? but I couldn't find a 'GetCurrentInstance'
+// or some such to tell you what instance a thread came from. But the
+// HINSTANCE is needed to launch the preferences dialog. Oh well!
 HINSTANCE inst;
 
 int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -1751,6 +1858,11 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       case WM_APP_LOAD_ERROR:
       case WM_APP_DECODE_ERROR:
       {
+         // if the load/decode threads get an error, they send this message
+         // to make sure the main thread gets woken up. then we have to decide
+         // whether to show it or not; we do that by scanning the whole cache
+         // to see what the most recently-browsed-and-displayable image is,
+         // and store that in 'best'.
          int best_lru=0,i;
          volatile ImageFile *best = NULL;
          for (i=0; i < MAX_CACHED_IMAGES; ++i) {
@@ -1763,14 +1875,17 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                }
             }
          }
-         if (best->status == LOAD_error_reading || best->status == LOAD_error_decoding) {
+         // if the most recently-browsed and displayable image is an error, show it
+         if (best->status == LOAD_error_reading || best->status == LOAD_error_decoding)
             set_error(best);
-         }
          break;
       }
 
       case WM_APP_DECODED: {
-         // scan the filelist for the highest-lru, decoded image
+         // if the decode thread finishes, it sends us this message. note that
+         // we skip files that had an error; but we use a global variable for 'best_lru'
+         // so we won't ever retreat. I'm not sure how this really interacts with
+         // the above loop, though. maybe they should be combined.
          int i;
          ImageFile *best = NULL;
          for (i=0; i < stb_arr_len(fileinfo); ++i) {
@@ -1787,13 +1902,15 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             o(("Post-decode, found a best image, better than any before.\n"));
             update_source(best);
          }
+         // since we've decoded a new image, our cache might be too big,
+         // so try flushing it
          flush_cache(FALSE);
          break;
       }
 
       case WM_MOUSEWHEEL: {
          int zdelta = (short) HIWORD(wParam);
-         // ignore scaling factor and step 1 by 1
+         // ignore wheel scaling factor and step 1 by 1
          if (zdelta > 0) resize(1);
          if (zdelta < 0) resize(-1);
          break;
@@ -1809,6 +1926,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          return 0;
 
       case WM_SETCURSOR: {
+         // there's no GetCursorPos for the client window?
          POINT p;
          if (GetCursorPos(&p)) {
             RECT rect;
@@ -1832,7 +1950,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
       case WM_CHAR: {
          int code = (GetKeyState(VK_SHIFT)   < 0 ? MY_SHIFT : 0)
-                 | (GetKeyState(VK_CONTROL) < 0 ? MY_CTRL  : 0);
+                  | (GetKeyState(VK_CONTROL) < 0 ? MY_CTRL  : 0);
          code += wParam;
          switch (wParam) {
             case 27:
@@ -1911,6 +2029,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                resize(-1);
                break;
 
+            case 'O':
             case MY_CTRL | 'O':
                open_file();
                break;
@@ -1934,8 +2053,11 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
    return 1;
 }
 
+// number of threads to use in resizer
+#define MAX_RESIZE   4
 int resize_threads;
 
+// whether 'cur' (the resized image currently displayed) actually comes from 'source'
 int cur_is_current(void)
 {
    if (!cur_filename) return FALSE;
@@ -1943,43 +2065,41 @@ int cur_is_current(void)
    return !strcmp(cur_filename, source_c->filename);
 }
 
-#define MAX_RESIZE   4
-
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-   char filenamebuffer[4096];
    int argc;
    char **argv = stb_tokens_quoted(lpCmdLine, " ", &argc);
-   MEMORYSTATUS mem;
-   MSG       msg;
-   WNDCLASSEX  wndclass;
-   HWND      hWnd;
+   char filenamebuffer[4096];
 
-   int image_x, image_y;
+   MEMORYSTATUS mem;
+   MSG          msg;
+   WNDCLASSEX   wndclass;
+   HWND         hWnd;
+
+   // initial loaded image
+   int image_x, image_y, image_n;
    unsigned char *image_data;
-   int image_n;
 
    inst = hInstance;
 
-   resize_threads = stb_processor_count();
+   // concatenate the version number onto the help text, because
+   // we can't do this statically with the current build process
+   strcat(helptext_center, VERSION);
 
-   if (resize_threads > MAX_RESIZE) resize_threads = MAX_RESIZE;
+   // determine the number of threads to use in the resizer
+   resize_threads = stb_min(stb_processor_count(), MAX_RESIZE);
 
-   #ifdef _DEBUG
-   do_debug = IsDebuggerPresent();
-   #endif
-
+   // compute the amount of physical memory to set a guess for the cache size
    GlobalMemoryStatus(&mem);
    if (mem.dwTotalPhys == 0) --mem.dwTotalPhys;
    physmem = mem.dwTotalPhys;
    max_cache_bytes = physmem / 6;
    if (max_cache_bytes > 256 << 20) max_cache_bytes = 256 << 20;
 
+   // load the registry preferences, if they're there (AFTER the above)
    reg_load();
 
-   strcat(helptext_center, VERSION);
-
-   /* Register the frame class */
+   // create the main window class
    memset(&wndclass, 0, sizeof(wndclass));
    wndclass.cbSize        = sizeof(wndclass);
    wndclass.style         = CS_OWNDC | CS_DBLCLKS;
@@ -1991,27 +2111,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    wndclass.lpszMenuName  = szAppName;
    wndclass.lpszClassName = szAppName;
    wndclass.hIconSm       = LoadIcon(hInstance, szAppName);
-   c_def = LoadCursor(NULL, IDC_ARROW);
+   if (!RegisterClassEx(&wndclass))
+      return FALSE;
+
+   // cache the cursors
+   c_def   = LoadCursor(NULL, IDC_ARROW);
    c_nw_se = LoadCursor(NULL, IDC_SIZENWSE);
    c_ne_sw = LoadCursor(NULL, IDC_SIZENESW);
    c_e_w   = LoadCursor(NULL, IDC_SIZEWE);
    c_n_s   = LoadCursor(NULL, IDC_SIZENS);
 
-   if (!RegisterClassEx(&wndclass))
-      return FALSE;
-
-   {
-      LOGFONT lf;
-      memset(&lf, 0, sizeof(lf));
-      lf.lfHeight       = 12;
-      lf.lfOutPrecision = OUT_TT_PRECIS; // prefer truetype to raster fonts
-      strcpy(lf.lfFaceName, "Times New Roman");
-      label_font = CreateFontIndirect(&lf);
-   }
+   build_label_font();
 
    srand(time(NULL));
 
    if (argc < 1) {
+      // if run with no arguments, get an initial filename
       OPENFILENAME o;
       memset(&o, 0, sizeof(o));
       o.lStructSize = sizeof(o);
@@ -2023,31 +2138,48 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
          return 0;
       filename = filenamebuffer;
    } else {
+      // else grab the first one... what about additional names? should
+      // we launch more windows? or initialize the filelist to them, I guess?
       filename = argv[0];
    }
    
+   // allocate worker threads
    resize_workers = stb_workq_new(resize_threads, resize_threads * 4);
-   cache_mutex = stb_mutex_new();
-   disk_command_queue = stb_sem_new(1,1);
-   decode_queue = stb_sem_new(1,1);
-   decode_mutex = stb_mutex_new();
 
+   // load initial image
    image_data = stbi_load(filename, &image_x, &image_y, &image_n, BPP);
    if (image_data == NULL) {
+      // we treat errors on initial image differently: message box and exit...
+      // now that we handle errors nicely, this is kind of dumb... but what
+      // size should the initial window be?
       char *why = stbi_failure_reason();
       char buffer[512];
       sprintf(buffer, "'%s': %s", filename, why);
       error(buffer);
       exit(0);
    }
+
+   // fix the filename & path for consistency with readdir()
    stb_fixpath(filename);
+   // extract just the path
    stb_splitpath(path_to_file, filename, STB_PATH);
+
+   // allocate semaphores / mutexes
+   cache_mutex  = stb_mutex_new();
+   decode_mutex = stb_mutex_new();
+   decode_queue       = stb_sem_new(1,1);
+   disk_command_queue = stb_sem_new(1,1);
+
+   // go ahead and start the other tasks
    stb_create_thread(diskload_task, NULL);
    stb_create_thread(decode_task, NULL);
 
+   // create the source image by converting the image data to BGR,
+   // pre-blending alpha
    source = malloc(sizeof(*source));
    make_image(source, image_x, image_y, image_data, image_n);
 
+   // create a cache entry in case they start browsing later
    cache[0].status = LOAD_available;
    cache[0].image = source;
    cache[0].lru = lru_stamp++;
@@ -2056,13 +2188,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    stb_sdict_add(file_cache, filename, (void *) &cache[0]);
    source_c = (ImageFile *) &cache[0];
 
-
    {
       int x,y;
       int w2 = source->x+FRAME*2, h2 = source->y+FRAME*2;
       int w,h;
+
+      // determine an initial window size, and resize 
       ideal_window_size(w2,h2, &w,&h, &x,&y);
 
+      // if the size exactly matches, don't resize, just copy
       if (w == source->x+FRAME*2 && h == source->y+FRAME*2) {
          display_error[0] = 0;
          cur = bmp_alloc(image_x + FRAME*2, image_y + FRAME*2);
@@ -2086,25 +2220,26 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
       }
       cur_filename = strdup(filename);
 
-      wx = w;
-      wy = h;
+      // create the window
       hWnd = CreateWindow(szAppName, displayName,
                         WS_POPUP,
                         x,y, w, h,
                         NULL, NULL, hInstance, NULL);
-   }
 
-   if (!hWnd)
-      return FALSE;
+      if (!hWnd)
+         return FALSE;
+   } // open brace for defining some temporary variables
 
+   // display the window
    ShowWindow(hWnd, nCmdShow);
    UpdateWindow(hWnd);
    InvalidateRect(hWnd, NULL, TRUE);
 
    for(;;) {
-      // if we're not currently resizing, start a resize
+      // if we're not currently resizing, and there's a resize request
       if (qs.w && pending_resize.size.w == 0) {
          if (source) {
+            // is the image we're showing the image to resize, and does the size match?
             if (cur_is_current() && (!cur || (qs.w == cur->x && qs.h >= cur->y) || (qs.h == cur->y && qs.w >= cur->x))) {
                // no resize necessary, just a variant of the current shape
                MoveWindow(win, qs.x,qs.y,qs.w,qs.h, TRUE);
@@ -2118,38 +2253,61 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
          qs.w = 0;
       }
 
+      // this is currently done in a stupid way--we should have the resizer
+      // post us a message to wake us up, but I wrote this before I had
+      // that infrastructure worked out
+
       if (!PeekMessage(&msg, NULL, 0,0, PM_NOREMOVE)) {
-         // no messages, so check for pending activity
+         // no messages, so check for a resize completing
          if (pending_resize.size.w) {
             // there's a resize pending, so don't block
             if (!pending_resize.image) {
+               // resize isn't done, so sleep for a bit and try again
                Sleep(10);
+               continue;
             } else {
+               // resize is done
                HDC hdc;
                o(("Finished resize\n"));
-               imfree(cur);
+
+               // reclaim ownership of the image from the resizer
                pending_resize.image_c->status = LOAD_available;
+
+               // free the current image we're about to write over
+               imfree(cur);
                cur = pending_resize.image;
-               display_error[0] = 0;
                cur_filename = pending_resize.filename;
-               pending_resize.filename = NULL;
+
+               // clear error messages
+               display_error[0] = 0;
+
                if (!show_frame) {
                   pending_resize.size.x += FRAME;
                   pending_resize.size.y += FRAME;
                   pending_resize.size.w -= FRAME*2;
                   pending_resize.size.h -= FRAME*2;
                }
+
+               // resize the window
                SetWindowPos(hWnd,NULL,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, SWP_NOZORDER);
+
+               // clear the resize request info
+               pending_resize.filename = NULL;
                barrier();
                pending_resize.size.w = 0;
+
+               // paint the window              
                hdc = GetDC(win);
                display(hWnd, hdc);
                ReleaseDC(win, hdc);
+
+               // restart from the top
+               continue;
             }
-            continue;
          }
       }
 
+      // we can get rid of this with peek-with-remove, surely?
       if (!GetMessage(&msg, NULL, 0, 0))
          return msg.wParam;
 
@@ -2158,12 +2316,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    }
 }
 
-
-#define MAGIC   (1.5 * (1 << 26) * (1 << 26))
-double temp;
-#define FAST_FLOAT_TO_INT(x) ((q->temp = (x) + MAGIC), *(int *)&q->temp)
-
-#define toint(x)  ((int) (x)) // FAST_FLOAT_TO_INT(x)
+/////////////////////////////////////////////////////////////////////////////
+//
+//    Everything from here on down just does image resizing
+//
 
 typedef struct {
    short i;

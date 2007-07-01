@@ -52,15 +52,15 @@ END
 // Dialog
 //
 
-IDD_pref DIALOG DISCARDABLE  0, 0, 161, 141
+IDD_pref DIALOG DISCARDABLE  0, 0, 161, 171
 STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "imv(stb) preferences"
 FONT 8, "MS Sans Serif"
 BEGIN
-    DEFPUSHBUTTON   "OK",IDOK,23,119,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,83,119,50,14
+    DEFPUSHBUTTON   "OK",IDOK,23,149,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,83,149,50,14
     CONTROL         "High-quality resizing",DIALOG_upsample,"Button",
-                    BS_AUTOCHECKBOX | WS_TABSTOP,24,86,76,10
+                    BS_AUTOCHECKBOX | WS_TABSTOP,23,116,76,10
     EDITTEXT        DIALOG_r1,57,50,19,12,ES_RIGHT | ES_AUTOHSCROLL
     EDITTEXT        DIALOG_g1,79,50,19,12,ES_RIGHT | ES_AUTOHSCROLL
     EDITTEXT        DIALOG_b1,101,50,19,12,ES_RIGHT | ES_AUTOHSCROLL
@@ -71,10 +71,14 @@ BEGIN
     EDITTEXT        DIALOG_r2,57,63,19,12,ES_RIGHT | ES_AUTOHSCROLL
     EDITTEXT        DIALOG_g2,79,63,19,12,ES_RIGHT | ES_AUTOHSCROLL
     EDITTEXT        DIALOG_b2,101,63,19,12,ES_RIGHT | ES_AUTOHSCROLL
-    EDITTEXT        DIALOG_cachesize,11,100,21,13,ES_AUTOHSCROLL
-    LTEXT           "Size of image cache in megabytes",IDC_STATIC,36,102,107,
+    EDITTEXT        DIALOG_cachesize,10,130,21,13,ES_AUTOHSCROLL
+    LTEXT           "Size of image cache in megabytes",IDC_STATIC,35,133,107,
                     8
     LTEXT           "",DIALOG_image,45,7,70,28
+    EDITTEXT        DIALOG_labelheight,11,99,20,12,ES_AUTOHSCROLL
+    LTEXT           "Label font height",IDC_STATIC,35,101,104,10
+    CONTROL         "Show filename label",DIALOG_showlabel,"Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP,23,87,120,10
 END
 
 
@@ -91,7 +95,7 @@ BEGIN
         LEFTMARGIN, 7
         RIGHTMARGIN, 154
         TOPMARGIN, 7
-        BOTTOMMARGIN, 134
+        BOTTOMMARGIN, 164
     END
 END
 #endif    // APSTUDIO_INVOKED
@@ -105,6 +109,52 @@ END
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
 IDI_ICON1               ICON    DISCARDABLE     "imv.ico"
+
+#ifndef _MAC
+/////////////////////////////////////////////////////////////////////////////
+//
+// Version
+//
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,0,0,1
+ PRODUCTVERSION 1,0,0,1
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "Comments", "\0"
+            VALUE "CompanyName", " Sean Barrett / nothings.org\0"
+            VALUE "FileDescription", "imv(stb) image viewer\0"
+            VALUE "FileVersion", "1, 0, 0, 1\0"
+            VALUE "InternalName", "stb_imv\0"
+            VALUE "LegalCopyright", "GPL; Copyright © 2007\0"
+            VALUE "LegalTrademarks", "\0"
+            VALUE "OriginalFilename", "stb_imv.exe\0"
+            VALUE "PrivateBuild", "\0"
+            VALUE "ProductName", "imv(stb)\0"
+            VALUE "ProductVersion", "1, 0, 0, 1\0"
+            VALUE "SpecialBuild", "\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
+
+#endif    // !_MAC
+
 #endif    // English (U.S.) resources
 /////////////////////////////////////////////////////////////////////////////
 
