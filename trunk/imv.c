@@ -19,7 +19,7 @@
 // Set section alignment to minimize alignment overhead
 #pragma comment(linker, "/FILEALIGN:0x200")
 
-#define _WIN32_WINNT 0x0400
+#define _WIN32_WINNT 0x0500
 #include <windows.h>
 #include <stdio.h>
 #include <time.h>
@@ -29,7 +29,8 @@
 #define STB_DEFINE
 #include "stb.h"          /*     http://nothings.org/stb.h         */
 
-#define STB_IMAGE_FAILURE_USERMSG
+#define STBI_FAILURE_USERMSG
+#define STBI_NO_STDIO
 #include "stb_image.c"    /*     http://nothings.org/stb_image.c   */
 
 #include "resource.h"
@@ -207,6 +208,7 @@ typedef struct
 stb_mutex cache_mutex, decode_mutex;
 stb_semaphore decode_queue;
 stb_semaphore disk_command_queue;
+stb_sync resize_merge;
 
 // a request communicated from the main thread to the disk-loader task
 typedef struct
@@ -1079,7 +1081,9 @@ struct
 
 // stb_sdict is a string dictionary (strings as keys, void * as values)
 // dictionary mapping filenames (key) to cached images (ImageFile *)
-// @TODO: do we need this, or can it be in fileinfo?
+// We can't just replace this with an ImageFile* in the fileinfo (and
+// the backpointer) because we keep ImageFile entries around for images
+// not in the fileinfo list.
 stb_sdict *file_cache;
 
 // when switching/refreshing directories, free this data
@@ -2054,7 +2058,6 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 }
 
 // number of threads to use in resizer
-#define MAX_RESIZE   4
 int resize_threads;
 
 // whether 'cur' (the resized image currently displayed) actually comes from 'source'
@@ -2087,7 +2090,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    strcat(helptext_center, VERSION);
 
    // determine the number of threads to use in the resizer
-   resize_threads = stb_min(stb_processor_count(), MAX_RESIZE);
+   resize_threads = stb_min(stb_processor_count(), 16);
+resize_threads = 8;
 
    // compute the amount of physical memory to set a guess for the cache size
    GlobalMemoryStatus(&mem);
@@ -2147,16 +2151,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    resize_workers = stb_workq_new(resize_threads, resize_threads * 4);
 
    // load initial image
-   image_data = stbi_load(filename, &image_x, &image_y, &image_n, BPP);
-   if (image_data == NULL) {
-      // we treat errors on initial image differently: message box and exit...
-      // now that we handle errors nicely, this is kind of dumb... but what
-      // size should the initial window be?
-      char *why = stbi_failure_reason();
-      char buffer[512];
-      sprintf(buffer, "'%s': %s", filename, why);
-      error(buffer);
-      exit(0);
+   {
+      char *why=NULL;
+      int len;
+      uint8 *data = stb_file(filename, &len);
+      if (!data)
+         why = "Couldn't open file";
+      else {
+         image_data = stbi_load_from_memory(data, len, &image_x, &image_y, &image_n, BPP);
+         if (image_data == NULL)
+            why = stbi_failure_reason();
+      }
+
+      if (why) {
+         // we treat errors on initial image differently: message box and exit...
+         // now that we handle errors nicely, this is kind of dumb... but what
+         // size should the initial window be?
+         char buffer[512];
+         sprintf(buffer, "'%s': %s", filename, why);
+         error(buffer);
+         exit(0);
+      }
    }
 
    // fix the filename & path for consistency with readdir()
@@ -2169,6 +2184,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    decode_mutex = stb_mutex_new();
    decode_queue       = stb_sem_new(1,1);
    disk_command_queue = stb_sem_new(1,1);
+   resize_merge = stb_sync_new();
 
    // go ahead and start the other tasks
    stb_create_thread(diskload_task, NULL);
@@ -2336,7 +2352,6 @@ typedef struct
    SplitPoint *p;
    int j0,j1;
    float dy;
-   int done;
 } ImageProcess;
 
 #define CACHE_REBLOCK  64
@@ -2423,7 +2438,6 @@ void *image_resize_work(ImageProcess *q)
          y += q->dy;
       }
    }
-   q->done = TRUE;
    return NULL;
 }
 
@@ -2462,25 +2476,17 @@ void image_resize_bilinear(Image *dest, Image *src)
       q[i].j1 = j1;
       q[i].dy = dy;
       q[i].p = p;
-      q[i].done = FALSE;
       j1 = j0;
    }
 
    if (resize_threads == 1) {
       image_resize_work(q);
    } else {
-      barrier();
+      stb_sync_set_target(resize_merge, resize_threads);
       for (i=1; i < resize_threads; ++i)
-         stb_workq(resize_workers, image_resize_work, q+i, NULL);
+         stb_workq_reach(resize_workers, image_resize_work, q+i, NULL, resize_merge);
       image_resize_work(q);
-
-      for(;;) {
-         for (i=1; i < resize_threads; ++i)
-            if (!q[i].done)
-               break;
-         if (i == resize_threads) break;
-         Sleep(10);
-      }
+      stb_sync_reach_and_wait(resize_merge);
    }
 
    stb_tempfree(point_buffer, p);
@@ -2718,7 +2724,6 @@ void * cubic_interp_1d_x_work(int n)
          x += dx;
       }
    }
-   barrier();
    return NULL;
 }
 
@@ -2734,21 +2739,11 @@ Image *cubic_interp_1d_x(Image *src, int out_w)
    if (resize_threads == 1) {
       cubic_interp_1d_x_work(0);
    } else {
-      volatile void *which[MAX_RESIZE];
-      for (i=0; i < resize_threads; ++i)
-         which[i] = (void *) 1;
-      barrier();
+      stb_sync_set_target(resize_merge, resize_threads);
       for (i=1; i < resize_threads; ++i)
-         stb_workq(resize_workers, (stb_thread_func) cubic_interp_1d_x_work, (void *) i, which+i);
+         stb_workq_reach(resize_workers, (stb_thread_func) cubic_interp_1d_x_work, (void *) i, NULL, resize_merge);
       cubic_interp_1d_x_work(0);
-
-      for(;;) {
-         for (i=1; i < resize_threads; ++i)
-            if (which[i])
-               break;
-         if (i == resize_threads) break;
-         Sleep(10);
-      }
+      stb_sync_reach_and_wait(resize_merge);
    }
    return cubic_work.out;
 }
@@ -2784,26 +2779,16 @@ Image *cubic_interp_1d_y(Image *src, int out_h)
    cubic_work.out = bmp_alloc(src->x, out_h);
    cubic_work.delta = ((src->y-1)*65536-1) / (out_h-1);
    cubic_work.out_len = out_h;
-   barrier();
 
    if (resize_threads == 1) {
       cubic_interp_1d_y_work(0);
    } else {
-      volatile void *which[MAX_RESIZE];
-      for (i=0; i < resize_threads; ++i)
-         which[i] = (void *) 1;
       barrier();
+      stb_sync_set_target(resize_merge, resize_threads);
       for (i=1; i < resize_threads; ++i)
-         stb_workq(resize_workers, (stb_thread_func) cubic_interp_1d_y_work, (void *) i, which+i);
+         stb_workq_reach(resize_workers, (stb_thread_func) cubic_interp_1d_y_work, (void *) i, NULL, resize_merge);
       cubic_interp_1d_y_work(0);
-
-      for(;;) {
-         for (i=1; i < resize_threads; ++i)
-            if (which[i])
-               break;
-         if (i == resize_threads) break;
-         Sleep(10);
-      }
+      stb_sync_reach_and_wait(resize_merge);
    }
    return cubic_work.out;
 }

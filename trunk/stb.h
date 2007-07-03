@@ -1,4 +1,4 @@
-/* stb-1.89 -- Sean's Tool Box -- public domain -- http://nothings.org/stb.h
+/* stb-1.90 -- Sean's Tool Box -- public domain -- http://nothings.org/stb.h
           no warranty is offered or implied; use this code at your own risk
 
 This is a single header file with a bunch of useful utilities
@@ -99,7 +99,7 @@ Bug reports, feature requests, etc. can be mailed to 'sean' at the above site.
 
    I haven't documented which is which; my point is that if you're
    doing the latter, some care is required. For example, routines
-   which stu__accept an output buffer but no length for that buffer
+   which accept an output buffer but no length for that buffer
    are obviously not robust.
 
 
@@ -118,6 +118,8 @@ Bug reports, feature requests, etc. can be mailed to 'sean' at the above site.
 
 3. Version History
 
+   1.90   stb_mutex uses CRITICAL_REGION; new stb_sync primitive for thread joining;
+          workqueue supports stb_sync instead of stb_semaphore
    1.89   support ';' in constant-string wildcards; stb_mutex wrapper (can implement
           with EnterCriticalRegion eventually)
    1.88   portable threading API (only for win32 so far); worker thread queueing
@@ -228,7 +230,7 @@ Parenthesized items have since been removed.
 
 
 Functions which take an output pointer parameter (e.g. for multiple return
-values) always stu__accept NULL for that parameter unless noted otherwise.
+values) always accept NULL for that parameter unless noted otherwise.
 
 
  LEGEND / KEY
@@ -3806,7 +3808,7 @@ int stb_perfect_create(stb_perfect *p, unsigned int *v, int n)
                         break; // fails
                      }
                   }
-                  // if succeeded, stu__accept
+                  // if succeeded, accept
                   if (k == bcount[i].count) {
                      bcount[i].map = j;
                      for (k=0; k < bcount[i].count; ++k) {
@@ -7209,7 +7211,7 @@ int stb_wordwrap(int *pairs, int pair_max, int count, char *str)
    for(;;) {
       int s=i; // first whitespace char; last nonwhite+1
       int w;   // word start
-      // stu__accept whitespace
+      // accept whitespace
       while (isspace(str[i])) {
          if (str[i] == '\n' || str[i] == '\r') {
             if (str[i] + str[i+1] == '\n' + '\r') ++i;
@@ -10589,9 +10591,12 @@ typedef void * (*stb_thread_func)(void *);
 typedef void *stb_thread;
 typedef void *stb_semaphore;
 typedef void *stb_mutex;
+typedef struct stb__sync *stb_sync;
+
 #define STB_SEMAPHORE_NULL    NULL
 #define STB_THREAD_NULL       NULL
 #define STB_MUTEX_NULL        NULL
+#define STB_SYNC_NULL         NULL
 
 // get the number of processors (limited to those in the affinity mask for this process).
 STB_EXTERN int stb_processor_count(void);
@@ -10607,8 +10612,8 @@ STB_EXTERN int           stb_work_maxunits(int n);
 // enqueue some work to be done (can do this from any thread, or even from a piece of work);
 // return value of f is stored in *return_code if non-NULL
 STB_EXTERN int           stb_work(stb_thread_func f, void *d, volatile void **return_code);
-// as above, but stb_sem_release is called on 'rel' after work is complete
-STB_EXTERN int           stb_work_sem(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel);
+// as above, but stb_sync_reach is called on 'rel' after work is complete
+STB_EXTERN int           stb_work_reach(stb_thread_func f, void *d, volatile void **return_code, stb_sync rel);
 
 
 // support for independent queues with their own threads
@@ -10620,7 +10625,7 @@ STB_EXTERN stb_workqueue*stb_workq_new_flags(int numthreads, int max_units, int 
 STB_EXTERN void          stb_workq_delete(stb_workqueue *q);
 STB_EXTERN void          stb_workq_numthreads(stb_workqueue *q, int n);
 STB_EXTERN int           stb_workq(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code);
-STB_EXTERN int           stb_workq_sem(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel);
+STB_EXTERN int           stb_workq_reach(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel);
 STB_EXTERN int           stb_workq_length(stb_workqueue *q);
 
 STB_EXTERN stb_thread    stb_create_thread (stb_thread_func f, void *d);
@@ -10636,6 +10641,12 @@ STB_EXTERN stb_mutex     stb_mutex_new(void);
 STB_EXTERN void          stb_mutex_delete(stb_mutex m);
 STB_EXTERN void          stb_mutex_begin(stb_mutex m);
 STB_EXTERN void          stb_mutex_end(stb_mutex m);
+
+STB_EXTERN stb_sync      stb_sync_new(void);
+STB_EXTERN void          stb_sync_delete(stb_sync s);
+STB_EXTERN int           stb_sync_set_target(stb_sync s, int count);
+STB_EXTERN void          stb_sync_reach_and_wait(stb_sync s);    // wait for 'target' reachers
+STB_EXTERN int           stb_sync_reach(stb_sync s);
 
 #ifdef STB_DEFINE
 
@@ -10727,6 +10738,80 @@ int stb_processor_count(void)
    return stb_bitcount(proc);
 }
 
+#ifdef _WINDOWS_
+#define STB_MUTEX_NATIVE
+DWORD foob;
+void *stb_mutex_new(void)
+{
+   CRITICAL_SECTION *p = (CRITICAL_SECTION *) malloc(sizeof(*p));
+   if (p)
+      InitializeCriticalSectionAndSpinCount(p, 500);
+   return p;
+}
+
+void stb_mutex_delete(void *p)
+{
+   if (p) {
+      DeleteCriticalSection((CRITICAL_SECTION *) p);
+      free(p);
+   }
+}
+
+void stb_mutex_begin(void *p)
+{
+   EnterCriticalSection((CRITICAL_SECTION *) p);
+}
+
+void stb_mutex_end(void *p)
+{
+   LeaveCriticalSection((CRITICAL_SECTION *) p);
+}
+#endif // _WINDOWS_
+
+#if 0
+// for future reference, 
+// InterlockedCompareExchange for x86:
+ int cas64_mp(void * dest, void * xcmp, void * xxchg) {
+        __asm
+        {
+                mov             esi, [xxchg]            ; exchange
+                mov             ebx, [esi + 0]
+                mov             ecx, [esi + 4]
+
+                mov             esi, [xcmp]                     ; comparand
+                mov             eax, [esi + 0]
+                mov             edx, [esi + 4]
+
+                mov             edi, [dest]                     ; destination
+                lock cmpxchg8b  [edi]
+                jz              yyyy;
+
+                mov             [esi + 0], eax;
+                mov             [esi + 4], edx;
+
+yyyy:
+                xor             eax, eax;
+                setz    al;
+        };
+
+inline unsigned __int64 _InterlockedCompareExchange64(volatile unsigned __int64 *dest
+                           ,unsigned __int64 exchange
+                           ,unsigned __int64 comperand)
+{
+    //value returned in eax::edx
+    __asm {
+        lea esi,comperand;
+        lea edi,exchange;
+
+        mov eax,[esi];
+        mov edx,4[esi];
+        mov ebx,[edi];
+        mov ecx,4[edi];
+        mov esi,dest;
+        lock CMPXCHG8B [esi];
+    } 
+#endif // #if 0
+
 #endif // _WIN32
 
 stb_thread stb_create_thread2(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
@@ -10740,11 +10825,123 @@ stb_thread stb_create_thread(stb_thread_func f, void *d)
 }
 
 // mutex implemented by wrapping semaphore
+#ifndef STB_MUTEX_NATIVE
 stb_mutex stb_mutex_new(void)            { return stb_sem_new(1,0); }
 void      stb_mutex_delete(stb_mutex m)  { stb_sem_delete (m);      }
 void      stb_mutex_begin(stb_mutex m)   { stb_sem_waitfor(m);      }
 void      stb_mutex_end(stb_mutex m)     { stb_sem_release(m);      }
+#endif
 
+// thread merge operation
+struct stb__sync
+{
+   int target;  // target number of threads to hit it
+   int sofar;   // total threads that hit it
+   int waiting; // total threads waiting
+
+   stb_mutex start;   // mutex to prevent starting again before finishing previous
+   stb_mutex mutex;   // mutex while tweaking state
+   stb_semaphore release; // semaphore wake up waiting threads
+      // we have to wake them up one at a time, rather than using a single release
+      // call, because win32 semaphores don't let you dynamically change the max count!
+};
+
+stb_sync stb_sync_new(void)
+{
+   stb_sync s = malloc(sizeof(*s));
+   if (!s) return s;
+
+   s->target = s->sofar = s->waiting = 0;
+   s->mutex   = stb_mutex_new();
+   s->start   = stb_mutex_new();
+   s->release = stb_sem_new(1,0);
+   if (!s->mutex || !s->release || !s->start) {
+      if (s->mutex  ) stb_mutex_delete(s->mutex);
+      if (s->start  ) stb_mutex_delete(s->mutex);
+      if (s->release) stb_sem_delete(s->release);
+      free(s);
+      return NULL;
+   }
+   stb_sem_waitfor(s->release); // put merge into blocking state
+   return s;
+}
+
+void stb_sync_delete(stb_sync s)
+{
+   if (s->waiting) {
+      // it's bad to delete while there are threads waiting!
+      // shall we let them continue, or just bail? just bail
+      assert(0);
+   }
+   stb_mutex_delete(s->mutex);
+   stb_mutex_delete(s->release);
+   free(s);
+}
+
+int stb_sync_set_target(stb_sync s, int count)
+{
+   // don't allow setting a target until the last one is fully released;
+   // note that this can lead to inefficient pipelining, and maybe we'd
+   // be better off ping-ponging between two internal syncs?
+   // I tried seeing how often this happened using TryEnterCriticalSection
+   // and could _never_ get it to happen in imv(stb), even with more threads
+   // than processors.
+   stb_mutex_begin(s->start);
+   stb_mutex_begin(s->mutex);
+   if (s->target != 0) {
+      assert(0);
+      stb_mutex_end(s->mutex);
+      return FALSE;
+   }
+   s->target  = count;
+   s->sofar   = 0;
+   s->waiting = 0;
+   stb_mutex_end(s->mutex);
+   return TRUE;
+}
+
+void stb__sync_release(stb_sync s)
+{
+   if (s->waiting)
+      stb_sem_release(s->release);
+   else {
+      s->target = 0;
+      stb_mutex_end(s->start);
+   }
+}
+
+int stb_sync_reach(stb_sync s)
+{
+   int n;
+   stb_mutex_begin(s->mutex);
+   assert(s->sofar < s->target);
+   n = ++s->sofar; // record this value to avoid possible race if we did 'return s->sofar';
+   if (s->sofar == s->target)
+      stb__sync_release(s);
+   stb_mutex_end(s->mutex);
+   return n;
+}
+
+void stb_sync_reach_and_wait(stb_sync s)
+{
+   stb_mutex_begin(s->mutex);
+   assert(s->sofar < s->target);
+   ++s->sofar;
+   if (s->sofar == s->target) {
+      stb__sync_release(s);
+      stb_mutex_end(s->mutex);
+   } else {
+      ++s->waiting; // we're waiting, so one more waiter
+      stb_mutex_end(s->mutex); // release the mutex to other threads
+      stb_sem_waitfor(s->release); // wait for merge completion
+      stb_mutex_begin(s->mutex); // on merge completion, grab the mutex
+      --s->waiting; // we're done waiting
+      stb__sync_release(s);
+      stb_mutex_end(s->mutex); // and now we're done
+      // this ends the same as the first case, but it's a lot
+      // clearer to understand without sharing the code
+   }
+}
 
 static int stb__work_maxitems = 64;
 
@@ -10753,7 +10950,7 @@ typedef struct
    stb_thread_func f;
    void *d;
    volatile void **retval;
-   stb_semaphore sem;
+   stb_sync sync;
 } stb__workinfo;
 
 static volatile stb__workinfo *stb__work;
@@ -10762,8 +10959,11 @@ struct stb__workqueue
 {
    int maxitems, numthreads;
    int oldest, newest;
-   stb_semaphore add_mutex, remove_mutex, available;
+   stb_semaphore available;
+   stb_mutex add, remove;
    stb__workinfo *work;
+   int added;
+   int done;
 };
 
 static void *stb__thread_workloop(void *p)
@@ -10773,16 +10973,16 @@ static void *stb__thread_workloop(void *p)
       void *z;
       stb__workinfo w;
       stb_sem_waitfor(q->available);
-      stb_sem_waitfor(q->remove_mutex);
+      stb_mutex_begin(q->remove);
       memcpy(&w, (void *) &q->work[q->oldest], sizeof(w)); // C++ won't copy
       if (++q->oldest == q->maxitems)
          q->oldest = 0;
-      stb_sem_release(q->remove_mutex);
+      stb_mutex_end(q->remove);
       if (w.f == NULL) // null work is a signal to end the thread
          return NULL;
       z = w.f(w.d);
       if (w.retval) *w.retval = z;
-      if (w.sem != STB_SEMAPHORE_NULL) stb_sem_release(w.sem);
+      if (w.sync != STB_SYNC_NULL) stb_sync_reach(w.sync);
    }
 }
 
@@ -10800,7 +11000,7 @@ static void *stb__thread_workloop_nomutex(void *p)
          return NULL;
       z = w.f(w.d);
       if (w.retval) *w.retval = z;
-      if (w.sem != STB_SEMAPHORE_NULL) stb_sem_release(w.sem);
+      if (w.sync != STB_SYNC_NULL) stb_sync_reach(w.sync);
    }
 }
 
@@ -10814,8 +11014,8 @@ stb_workqueue *stb_workq_new(int num_threads, int max_units)
 void stb__workq_delete_raw(stb_workqueue *q)
 {
    free(q->work);
-   stb_sem_delete(q->add_mutex);
-   stb_sem_delete(q->remove_mutex);
+   stb_mutex_delete(q->add);
+   stb_mutex_delete(q->remove);
    stb_sem_delete(q->available);
    free(q);
 }
@@ -10824,17 +11024,18 @@ stb_workqueue *stb_workq_new_flags(int numthreads, int max_units, int no_add_mut
 {
    stb_workqueue *q = (stb_workqueue *) malloc(sizeof(*q));
    if (q == NULL) return NULL;
-   q->available    = stb_sem_new(stb__work_maxitems,1);
-   q->add_mutex    = no_add_mutex    ? STB_SEMAPHORE_NULL : stb_sem_new(1,0);
-   q->remove_mutex = no_remove_mutex ? STB_SEMAPHORE_NULL : stb_sem_new(1,0);
+   q->available  = stb_sem_new(stb__work_maxitems,1);
+   q->add        = no_add_mutex    ? STB_MUTEX_NULL : stb_mutex_new();
+   q->remove     = no_remove_mutex ? STB_MUTEX_NULL : stb_mutex_new();
    q->maxitems = max_units < 1 ? 1 : max_units;
    ++q->maxitems; // since head cannot equal tail, we need one extra
    q->work = (stb__workinfo *) malloc(q->maxitems * sizeof(*q->work));
    q->newest = q->oldest = 0;
    q->numthreads = 0;
+   q->added = q->done = 0;
    if (q->work == NULL || q->available == STB_SEMAPHORE_NULL ||
-       (q->add_mutex == STB_SEMAPHORE_NULL && !no_add_mutex) ||
-       (q->remove_mutex == STB_SEMAPHORE_NULL && !no_remove_mutex)) {
+       (q->add == STB_MUTEX_NULL && !no_add_mutex) ||
+       (q->remove == STB_MUTEX_NULL && !no_remove_mutex)) {
       stb__workq_delete_raw(q);
       return NULL;
    }
@@ -10856,12 +11057,13 @@ static void stb_work_init(int num_threads)
 void stb_workq_delete(stb_workqueue *q)
 {
    for(;;) {
-      stb_sem_waitfor(q->add_mutex);
+      stb_mutex_begin(q->add);
       if (q->oldest == q->newest) {
-         stb_sem_release(q->add_mutex);
+         stb_mutex_end(q->add);
          stb__workq_delete_raw(q);
          return;
       }
+      stb_mutex_end(q->add);
       stb__thread_sleep(1);
    }
 }
@@ -10875,7 +11077,7 @@ int stb_work_maxunits(int n)
    return stb__work_maxitems;
 }
 
-static int stb__work_raw(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
+static int stb__work_raw(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
 {
    int n, res;
    stb__workinfo w;
@@ -10886,8 +11088,8 @@ static int stb__work_raw(stb_workqueue *q, stb_thread_func f, void *d, volatile 
    w.f = f;
    w.d = d;
    w.retval = return_code;
-   w.sem = rel;
-   stb_sem_waitfor(q->add_mutex);
+   w.sync = rel;
+   stb_mutex_begin(q->add);
    n = q->newest+1; if (n == q->maxitems) n=0;
    if (n == q->oldest) {
       // wraparound, bail!
@@ -10897,7 +11099,7 @@ static int stb__work_raw(stb_workqueue *q, stb_thread_func f, void *d, volatile 
       memcpy((void *) &q->work[q->newest], &w, sizeof(w));  // C++ won't copy
       q->newest = n;
    }
-   stb_sem_release(q->add_mutex);
+   stb_mutex_end(q->add);
    if (res)
       stb_sem_release(q->available);
    return res;
@@ -10906,10 +11108,12 @@ static int stb__work_raw(stb_workqueue *q, stb_thread_func f, void *d, volatile 
 int stb_workq_length(stb_workqueue *q)
 {
    int o,n;
-   if (q->remove_mutex) stb_sem_waitfor(q->remove_mutex);
+   if (q->remove) stb_sem_waitfor(q->remove);
+   if (q->add   ) stb_sem_waitfor(q->add);
    o = q->oldest;
    n = q->newest;
-   if (q->remove_mutex) stb_sem_release(q->remove_mutex);
+   if (q->add   ) stb_sem_release(q->add);
+   if (q->remove) stb_sem_release(q->remove);
    if (n > o) o += q->maxitems;
    return o-n;
 }
@@ -10917,10 +11121,10 @@ int stb_workq_length(stb_workqueue *q)
 int stb_workq(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code)
 {
    if (f == NULL) return 0;
-   return stb_workq_sem(q, f, d, return_code, NULL);
+   return stb_workq_reach(q, f, d, return_code, NULL);
 }
 
-int stb_workq_sem(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
+int stb_workq_reach(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
 {
    if (f == NULL) return 0;
    return stb__work_raw(q, f, d, return_code, rel);
@@ -10930,7 +11134,7 @@ void stb_workq_numthreads(stb_workqueue *q, int n)
 {
    stb_sem_waitfor(stb__threadsem);
    while (q->numthreads < n) {
-      if (q->remove_mutex == STB_SEMAPHORE_NULL)
+      if (q->remove == STB_SEMAPHORE_NULL)
          stb_create_thread(stb__thread_workloop_nomutex, q);
       else
          stb_create_thread(stb__thread_workloop, q);
@@ -10948,9 +11152,9 @@ int stb_work(stb_thread_func f, void *d, volatile void **return_code)
    return stb_workq(stb__work_global, f,d,return_code);
 }
 
-int stb_work_sem(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
+int stb_work_reach(stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
 {
-   return stb_workq_sem(stb__work_global, f,d,return_code,rel);
+   return stb_workq_reach(stb__work_global, f,d,return_code,rel);
 }
 
 void stb_work_numthreads(int n)
