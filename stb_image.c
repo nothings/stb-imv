@@ -1,10 +1,22 @@
-/* stbi-0.93 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
+/* stbi-0.94 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
                       when you control the images you're loading
-  
+
+   QUICK NOTES:
+      Primarily of interest to game developers and other people who can
+          avoid problematic images and only need the trivial interface
+
+      JPEG baseline (no JPEG progressive, no oddball channel decimations)
+      PNG non-interlaced
+      BMP non-1bpp, non-RLE
+      writes BMP,TGA (define STBI_NO_WRITE to remove code)
+      decoded from memory or through stdio FILE (define STBI_NO_STDIO to remove code)
+        
    TODO:
       stbi_info_*
+      PSD loader
   
    history:
+      0.94   STBI_NO_STDIO to disable stdio usage; rename all #defines the same
       0.93   handle jpegtran output; verbose errors
       0.92   read 4,8,16,24,32-bit BMP files of several formats
       0.91   output 24-bit Windows 3.0 BMP files
@@ -32,8 +44,7 @@
 //    - 8-bit samples only (jpeg, png)
 //    - not threadsafe
 //    - channel subsampling of at most 2 in each dimension (jpeg)
-//    - no delayed line count (jpeg) -- image height must be in header
-//    - unsophisticated error handling
+//    - no delayed line count (jpeg) -- IJG doesn't support either
 //
 // Basic usage:
 //    int x,y,n;
@@ -71,12 +82,15 @@
 // If image loading fails for any reason, the return value will be NULL,
 // and *x, *y, *comp will be unchanged. The function stbi_failure_reason()
 // can be queried for an extremely brief, end-user unfriendly explanation
-// of why the load failed. Define STB_IMAGE_NO_FAILURE_REASON to avoid
-// compiling these strings at all.
+// of why the load failed. Define STBI_NO_FAILURE_STRINGS to avoid
+// compiling these strings at all, and STBI_FAILURE_USERMSG to get slightly
+// more user-friendly ones.
 //
-// Paletted PNG images are automatically depalettized.
+// Paletted PNG and BMP images are automatically depalettized.
 
+#ifndef STBI_NO_STDIO
 #include <stdio.h>
+#endif
 
 enum
 {
@@ -107,8 +121,10 @@ extern int      stbi_write_tga       (char *filename,           int x, int y, in
 // PRIMARY API - works on images of any type
 
 // load image by filename, open file, or memory buffer
+#ifndef STBI_NO_STDIO
 extern stbi_uc *stbi_load            (char *filename,           int *x, int *y, int *comp, int req_comp);
 extern stbi_uc *stbi_load_from_file  (FILE *f,                  int *x, int *y, int *comp, int req_comp);
+#endif
 extern stbi_uc *stbi_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
 // for stbi_load_from_file, file pointer is left pointing immediately after image
 
@@ -211,9 +227,9 @@ static int e(char *str)
    return 0;
 }
 
-#ifdef STB_IMAGE_NO_FAILURE_STRINGS
+#ifdef STBI_NO_FAILURE_STRINGS
    #define e(x,y)  0
-#elif defined(STB_IMAGE_FAILURE_USERMSG)
+#elif defined(STBI_FAILURE_USERMSG)
    #define e(x,y)  e(y)
 #else
    #define e(x,y)  e(x)
@@ -226,6 +242,7 @@ void stbi_image_free(unsigned char *retval_from_stbi_load)
    free(retval_from_stbi_load);
 }
 
+#ifndef STBI_NO_STDIO
 unsigned char *stbi_load(char *filename, int *x, int *y, int *comp, int req_comp)
 {
    FILE *f = fopen(filename, "rb");
@@ -246,6 +263,7 @@ unsigned char *stbi_load_from_file(FILE *f, int *x, int *y, int *comp, int req_c
       return stbi_bmp_load_from_file(f,x,y,comp,req_comp);
    return ep("unknown image type", "Image not of any known type, or corrupt");
 }
+#endif
 
 unsigned char *stbi_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp)
 {
@@ -281,31 +299,38 @@ enum
 
 // An API for reading either from memory or file.
 // It fits on a single screen. No abstract base classes needed.
+#ifndef STBI_NO_STDIO
 static FILE  *img_file;
+#endif
 static uint8 *img_buffer, *img_buffer_end;
 
+#ifndef STBI_NO_STDIO
 static void start_file(FILE *f)
 {
    img_file = f;
 }
+#endif
 
 static void start_mem(uint8 *buffer, int len)
 {
+#ifndef STBI_NO_STDIO
    img_file = NULL;
+#endif
    img_buffer = buffer;
    img_buffer_end = buffer+len;
 }
 
 static int get8(void)
 {
+#ifndef STBI_NO_STDIO
    if (img_file) {
       int c = fgetc(img_file);
       return c == EOF ? 0 : c;
-   } else {
-      if (img_buffer < img_buffer_end)
-         return *img_buffer++;
-      return 0;
    }
+#endif
+   if (img_buffer < img_buffer_end)
+      return *img_buffer++;
+   return 0;
 }
 
 static uint8 get8u(void)
@@ -315,9 +340,11 @@ static uint8 get8u(void)
 
 static void skip(int n)
 {
+#ifndef STBI_NO_STDIO
    if (img_file)
       fseek(img_file, n, SEEK_CUR);
    else
+#endif
       img_buffer += n;
 }
 
@@ -347,12 +374,14 @@ static uint32 get32le(void)
 
 static void getn(stbi_uc *buffer, int n)
 {
-   if (img_file)
+#ifndef STBI_NO_STDIO
+   if (img_file) {
       fread(buffer, 1, n, img_file);
-   else {
-      memcpy(buffer, img_buffer, n);
-      img_buffer += n;
+      return;
    }
+#endif
+   memcpy(buffer, img_buffer, n);
+   img_buffer += n;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1286,6 +1315,7 @@ static uint8 *load_jpeg_image(int *out_x, int *out_y, int *comp, int req_comp)
    }
 }
 
+#ifndef STBI_NO_STDIO
 unsigned char *stbi_jpeg_load_from_file(FILE *f, int *x, int *y, int *comp, int req_comp)
 {
    start_file(f);
@@ -1301,6 +1331,7 @@ unsigned char *stbi_jpeg_load(char *filename, int *x, int *y, int *comp, int req
    fclose(f);
    return data;
 }
+#endif
 
 unsigned char *stbi_jpeg_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp)
 {
@@ -1308,6 +1339,7 @@ unsigned char *stbi_jpeg_load_from_memory(stbi_uc *buffer, int len, int *x, int 
    return load_jpeg_image(x,y,comp,req_comp);
 }
 
+#ifndef STBI_NO_STDIO
 int stbi_jpeg_test_file(FILE *f)
 {
    int n,r;
@@ -1317,6 +1349,7 @@ int stbi_jpeg_test_file(FILE *f)
    fseek(f,n,SEEK_SET);
    return r;
 }
+#endif
 
 int stbi_jpeg_test_memory(unsigned char *buffer, int len)
 {
@@ -1982,9 +2015,14 @@ static int parse_png_file(int scan, int req_comp)
                p = (uint8 *) realloc(idata, idata_limit); if (p == NULL) return e("outofmem", "Out of memory");
                idata = p;
             }
-            if (img_file) {
+            #ifndef STBI_NO_STDIO
+            if (img_file)
+            {
                if (fread(idata+ioff,1,c.length,img_file) != c.length) return e("outofdata","Corrupt PNG");
-            } else {
+            }
+            else
+            #endif
+            {
                memcpy(idata+ioff, img_buffer, c.length);
                img_buffer += c.length;
             }
@@ -2021,7 +2059,7 @@ static int parse_png_file(int scan, int req_comp)
          default:
             // if critical, fail
             if ((c.type & (1 << 29)) == 0) {
-               #ifndef STB_IMAGE_NO_FAILURE_STRINGS
+               #ifndef STBI_NO_FAILURE_STRINGS
                static char invalid_chunk[] = "XXXX chunk not known";
                invalid_chunk[0] = (uint8) (c.type >> 24);
                invalid_chunk[1] = (uint8) (c.type >> 16);
@@ -2060,6 +2098,7 @@ static unsigned char *do_png(int *x, int *y, int *n, int req_comp)
    return result;
 }
 
+#ifndef STBI_NO_STDIO
 unsigned char *stbi_png_load_from_file(FILE *f, int *x, int *y, int *comp, int req_comp)
 {
    start_file(f);
@@ -2075,6 +2114,7 @@ unsigned char *stbi_png_load(char *filename, int *x, int *y, int *comp, int req_
    fclose(f);
    return data;
 }
+#endif
 
 unsigned char *stbi_png_load_from_memory(unsigned char *buffer, int len, int *x, int *y, int *comp, int req_comp)
 {
@@ -2082,6 +2122,7 @@ unsigned char *stbi_png_load_from_memory(unsigned char *buffer, int len, int *x,
    return do_png(x,y,comp,req_comp);
 }
 
+#ifndef STBI_NO_STDIO
 int stbi_png_test_file(FILE *f)
 {
    int n,r;
@@ -2091,6 +2132,7 @@ int stbi_png_test_file(FILE *f)
    fseek(f,n,SEEK_SET);
    return r;
 }
+#endif
 
 int stbi_png_test_memory(unsigned char *buffer, int len)
 {
@@ -2121,6 +2163,7 @@ static int bmp_test(void)
    return 0;
 }
 
+#ifndef STBI_NO_STDIO
 int      stbi_bmp_test_file        (FILE *f)
 {
    int r,n = ftell(f);
@@ -2129,6 +2172,7 @@ int      stbi_bmp_test_file        (FILE *f)
    fseek(f,n,SEEK_SET);
    return r;
 }
+#endif
 
 int      stbi_bmp_test_memory      (stbi_uc *buffer, int len)
 {
@@ -2352,6 +2396,7 @@ static stbi_uc *bmp_load(int *x, int *y, int *comp, int req_comp)
    return out;
 }
 
+#ifndef STBI_NO_STDIO
 stbi_uc *stbi_bmp_load             (char *filename,           int *x, int *y, int *comp, int req_comp)
 {
    stbi_uc *data;
@@ -2367,6 +2412,7 @@ stbi_uc *stbi_bmp_load_from_file   (FILE *f,                  int *x, int *y, in
    start_file(f);
    return bmp_load(x,y,comp,req_comp);
 }
+#endif
 
 stbi_uc *stbi_bmp_load_from_memory (stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp)
 {
