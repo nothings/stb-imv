@@ -10870,7 +10870,7 @@ void stb_sync_delete(stb_sync s)
 {
    if (s->waiting) {
       // it's bad to delete while there are threads waiting!
-      // shall we let them continue, or just bail? just bail
+      // shall we wait for them to reach, or just bail? just bail
       assert(0);
    }
    stb_mutex_delete(s->mutex);
@@ -10885,14 +10885,14 @@ int stb_sync_set_target(stb_sync s, int count)
    // be better off ping-ponging between two internal syncs?
    // I tried seeing how often this happened using TryEnterCriticalSection
    // and could _never_ get it to happen in imv(stb), even with more threads
-   // than processors.
+   // than processors. So who knows!
    stb_mutex_begin(s->start);
+
+   // this mutex is pointless, since it's not valid for threads
+   // to call reach() before anyone calls set_target() anyway
    stb_mutex_begin(s->mutex);
-   if (s->target != 0) {
-      assert(0);
-      stb_mutex_end(s->mutex);
-      return FALSE;
-   }
+
+   assert(s->target == 0); // enforced by start mutex
    s->target  = count;
    s->sofar   = 0;
    s->waiting = 0;
@@ -10933,7 +10933,9 @@ void stb_sync_reach_and_wait(stb_sync s)
    } else {
       ++s->waiting; // we're waiting, so one more waiter
       stb_mutex_end(s->mutex); // release the mutex to other threads
+
       stb_sem_waitfor(s->release); // wait for merge completion
+
       stb_mutex_begin(s->mutex); // on merge completion, grab the mutex
       --s->waiting; // we're done waiting
       stb__sync_release(s);
