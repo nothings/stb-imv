@@ -8,8 +8,14 @@ This is a beta version, targetting the eventual milestones:
 
 = Release Notes =
 
+  Version 0.92: Beta 3
+    * internal: replace Sleep()-based thread-joining code with synchronization primitive
+    * internal: change work queue internals to use stb_mutex
+    * internal: change stb_mutex from using win32 semaphore to using CRITICAL_SECTION
+    * internal: stbi_load_from_memory() only; remove stdio from stb_image (500 bytes)
+
   Version 0.91: Beta 2 (2007-07-01)
-    * feature: allow changing the label font size
+    * feature: allow changing the label font size, toggle label in preferences
     * internal: various refactorings to clean up the code
     * bugfix: finish commenting code (except resizer)
     * bugfix: fix tiny leak closing the preferences dialog with the close button
