@@ -8,6 +8,13 @@ This is a beta version, targetting the eventual milestones:
 
 = Release Notes =
 
+  Version 0.93: Beta 4
+    * bugfix: alter stb_image to support jpegs with weird header blocks
+    * bugfix: exit after printing directory error message
+    * bugfix: change naming of frame/border variables
+    * bugfix: ESC when showing help clears help, rather than exiting
+    * internal: clean up registry code to halve registry ops
+
   Version 0.92: Beta 3
     * internal: replace Sleep()-based thread-joining code with synchronization primitive
     * internal: change work queue internals to use stb_mutex
