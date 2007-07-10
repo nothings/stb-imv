@@ -540,7 +540,7 @@ int upsample_cubic = TRUE;
 // declare with extra bytes so we can print the version number into it
 char helptext_center[88] =
    "imv(stb)\n"
-   "Copyright 2007 Sean Barret\n"
+   "Copyright 2007 Sean Barrett\n"
    "http://code.google.com/p/stb-imv\n"
    "version "
 ;
@@ -556,8 +556,8 @@ char helptext_left[] =
    "  (CTRL-) O: open image\n"
    "       P: change preferences\n"
    "      F: toggle frame\n"
-   "SHIFT-F: toggle white stripe in frame\n"
-   "CTRL-F: toggle both\n"
+   "SHIFT-F: toggle frame but keep stripe\n"
+   " CTRL-F: toggle white stripe in frame\n"
    "     L: toggle filename label\n"
    "F1, H, ?: help"
 ;
@@ -1110,7 +1110,7 @@ void init_filelist(void)
    }
 
    image_files = stb_readdir_files_mask(path_to_file, "*.jpg;*.jpeg;*.png;*.bmp");
-   if (image_files == NULL) error("Error: couldn't read directory.");
+   if (image_files == NULL) { error("Error: couldn't read directory."); exit(0); }
 
    // given the array of filenames, build an equivalent fileinfo array
    stb_arr_setlen(fileinfo, stb_arr_len(image_files));
@@ -1623,58 +1623,51 @@ void mouse(UINT ev, int x, int y)
 static unsigned int physmem; // available physical memory according to GlobalMemoryStatus
 
 char *reg_root = "Software\\SilverSpaceship\\imv";
+HKEY zreg;
+
 int reg_get(char *str, void *data, int len)
 {
-   static char buffer[128];
-   int result=0;
-   HKEY z=0;
-   if (ERROR_SUCCESS == RegOpenKeyEx(HKEY_LOCAL_MACHINE, reg_root, 0, KEY_READ, &z))
-   {
-      unsigned int type;
-      if (ERROR_SUCCESS == RegQueryValueEx(z, str, 0, &type, data, &len))
-         if (type == REG_BINARY)
-            result = 1;
-   }
-   if (z)
-      RegCloseKey(z);
-   return result;
+   unsigned int type;
+   if (ERROR_SUCCESS == RegQueryValueEx(zreg, str, 0, &type, data, &len))
+      if (type == REG_BINARY)
+         return TRUE;
+   return FALSE;
 }
 
 int reg_set(char *str, void *data, int len)
 {
-   int result = 0;
-   HKEY z=0;
-   if (ERROR_SUCCESS == RegCreateKeyEx(HKEY_LOCAL_MACHINE, reg_root, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, NULL, &z, NULL))
-   {
-      if (ERROR_SUCCESS == RegSetValueEx(z, str, 0, REG_BINARY, data, len))
-         result = 1;
-   }
-   if (z)
-      RegCloseKey(z);
-   return result;
+   return (ERROR_SUCCESS == RegSetValueEx(zreg, str, 0, REG_BINARY, data, len));
 }
 
 // we use very short strings for these to avoid wasting space, since
 // people shouldn't be mucking with them directly anyway!
 void reg_save(void)
 {
-   int temp = max_cache_bytes >> 20;
-   reg_set("ac", &alpha_background, 6);
-   reg_set("up", &upsample_cubic, 4);
-   reg_set("cache", &temp, 4);
-   reg_set("lfs", &label_font_height, 4);
-   reg_set("label", &show_label, 4);
+   if (ERROR_SUCCESS == RegCreateKeyEx(HKEY_LOCAL_MACHINE, reg_root, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_ALL_ACCESS, NULL, &zreg, NULL))
+   {
+      int temp = max_cache_bytes >> 20;
+      reg_set("ac", &alpha_background, 6);
+      reg_set("up", &upsample_cubic, 4);
+      reg_set("cache", &temp, 4);
+      reg_set("lfs", &label_font_height, 4);
+      reg_set("label", &show_label, 4);
+      RegCloseKey(zreg);
+   }
 }
 
 void reg_load(void)
 {
    int temp;
-   reg_get("ac", &alpha_background, 6);
-   reg_get("up", &upsample_cubic, 4);
-   reg_get("lfs", &label_font_height, 4);
-   reg_get("label", &show_label, 4);
-   if (reg_get("cache", &temp, 4))
-      max_cache_bytes = temp << 20;
+   if (ERROR_SUCCESS == RegOpenKeyEx(HKEY_LOCAL_MACHINE, reg_root, 0, KEY_READ, &zreg))
+   {
+      reg_get("ac", &alpha_background, 6);
+      reg_get("up", &upsample_cubic, 4);
+      reg_get("lfs", &label_font_height, 4);
+      reg_get("label", &show_label, 4);
+      if (reg_get("cache", &temp, 4))
+         max_cache_bytes = temp << 20;
+      RegCloseKey(zreg);
+   }
 }
 
 static HWND dialog; // preferences dialog
@@ -1957,8 +1950,13 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                   | (GetKeyState(VK_CONTROL) < 0 ? MY_CTRL  : 0);
          code += wParam;
          switch (wParam) {
+
             case 27:
-               exit(0);
+               if (!show_help)
+                  exit(0);
+               show_help = !show_help;
+               InvalidateRect(win, NULL, FALSE);
+               break;
 
             case ' ': // space
                advance(1);
@@ -2004,17 +2002,17 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                InvalidateRect(win, NULL, FALSE);
                break;
 
-            case 'F' | MY_SHIFT:
+            case 'F' | MY_CTRL:
                extra_border = !extra_border;
                if (cur) frame(cur);
                InvalidateRect(win, NULL, FALSE);
                break;
 
-            case 'F':
+            case 'F' | MY_SHIFT:
                toggle_frame();
                break;
 
-            case 'F' | MY_CTRL:
+            case 'F':
                toggle_frame();
                extra_border = show_frame;
                if (cur) frame(cur);
