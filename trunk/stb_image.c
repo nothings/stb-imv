@@ -1,4 +1,4 @@
-/* stbi-0.94 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
+/* stbi-0.95 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
                       when you control the images you're loading
 
    QUICK NOTES:
@@ -16,6 +16,7 @@
       PSD loader
   
    history:
+      0.95   during header scan, seek to markers in case of padding
       0.94   STBI_NO_STDIO to disable stdio usage; rename all #defines the same
       0.93   handle jpegtran output; verbose errors
       0.92   read 4,8,16,24,32-bit BMP files of several formats
@@ -331,6 +332,15 @@ static int get8(void)
    if (img_buffer < img_buffer_end)
       return *img_buffer++;
    return 0;
+}
+
+static int at_eof(void)
+{
+#ifndef STBI_NO_STDIO
+   if (img_file)
+      return feof(img_file);
+#endif
+   return img_buffer >= img_buffer_end;   
 }
 
 static uint8 get8u(void)
@@ -1072,6 +1082,11 @@ static int decode_jpeg_header(int scan)
    while (!SOF(m)) {
       if (!process_marker(m)) return 0;
       m = get_marker();
+      while (m == MARKER_none) {
+         // some files have extra padding after their blocks, so ok, we'll scan
+         if (at_eof()) return e("no SOF", "Corrupt JPEG");
+         m = get_marker();
+      }
    }
    if (!process_frame_header(scan)) return 0;
    return 1;
