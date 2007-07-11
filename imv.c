@@ -35,6 +35,25 @@
 
 #include "resource.h"
 
+
+// general configuration options
+
+#define USE_FREEIMAGE
+
+// size of border in pixels
+#define FRAME   3
+
+// location within frame of secondary border
+#define FRAME2  (FRAME >> 1)
+
+// color of secondary border
+#define GREY  192
+
+
+
+
+
+
 // all programs get the version number from the same place: version.bat
 #define set   static char *
 #include "version.bat"
@@ -62,16 +81,6 @@ void ods(char *str, ...)
 #else
 #define o(x)
 #endif
-
-
-// size of border in pixels
-#define FRAME   3
-
-// location within frame of secondary border
-#define FRAME2  (FRAME >> 1)
-
-// color of secondary border
-#define GREY  192
 
 
 // internal messages (all used for waking up main thread from tasks)
@@ -409,6 +418,8 @@ start:
    return best;
 }
 
+static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, int *n, int n_req);
+
 void *decode_task(void *p)
 {
    for(;;) {
@@ -428,7 +439,7 @@ void *decode_task(void *p)
 
          // decode image
          o(("DECIDE: decoding %s\n", f->filename));
-         data = stbi_load_from_memory(f->filedata, f->len, &x, &y, &n, BPP);
+         data = imv_decode_from_memory(f->filedata, f->len, &x, &y, &n, BPP);
          o(("DECODE: decoded %s\n", f->filename));
 
          // free copy of data from disk, which we don't need anymore
@@ -536,9 +547,8 @@ int show_help=0;
 int downsample_cubic = 0;
 int upsample_cubic = TRUE;
 
-
 // declare with extra bytes so we can print the version number into it
-char helptext_center[88] =
+char helptext_center[104] =
    "imv(stb)\n"
    "Copyright 2007 Sean Barrett\n"
    "http://code.google.com/p/stb-imv\n"
@@ -546,7 +556,7 @@ char helptext_center[88] =
 ;
 
 char helptext_left[] =
-   "\n\n\n\n"
+   "\n\n\n\n\n"
    "       ESC: exit\n"
    " ALT-ENTER: toggle size\n"
    " CTRL-PLUS: zoom in\n"
@@ -563,7 +573,7 @@ char helptext_left[] =
 ;
 
 char helptext_right[] =
-   "\n\n\n\n\n"
+   "\n\n\n\n\n\n"
    "right-click to exit\n"
    "left drag center to move\n"
    "left drag edges to resize\n"
@@ -1096,6 +1106,8 @@ void free_fileinfo(void)
    fileinfo = NULL;
 }
 
+char *open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp\0";
+
 // build a filelist for the current directory
 void init_filelist(void)
 {
@@ -1109,7 +1121,7 @@ void init_filelist(void)
       free_fileinfo();
    }
 
-   image_files = stb_readdir_files_mask(path_to_file, "*.jpg;*.jpeg;*.png;*.bmp");
+   image_files = stb_readdir_files_mask(path_to_file, open_filter + 12);
    if (image_files == NULL) { error("Error: couldn't read directory."); exit(0); }
 
    // given the array of filenames, build an equivalent fileinfo array
@@ -1365,12 +1377,13 @@ void advance(int dir)
 //   the filelist, and force it to load (and prefetch)
 //   with 'advance'
 static char filenamebuffer[4096];
+
 void open_file(void)
 {
    OPENFILENAME o;
    memset(&o, 0, sizeof(o));
    o.lStructSize = sizeof(o);
-   o.lpstrFilter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp\0";
+   o.lpstrFilter = open_filter;
    o.lpstrFile = filenamebuffer;
    filenamebuffer[0] = 0;
    o.nMaxFile = sizeof(filenamebuffer);
@@ -1639,6 +1652,8 @@ int reg_set(char *str, void *data, int len)
    return (ERROR_SUCCESS == RegSetValueEx(zreg, str, 0, REG_BINARY, data, len));
 }
 
+int only_stbi=FALSE;
+
 // we use very short strings for these to avoid wasting space, since
 // people shouldn't be mucking with them directly anyway!
 void reg_save(void)
@@ -1651,6 +1666,7 @@ void reg_save(void)
       reg_set("cache", &temp, 4);
       reg_set("lfs", &label_font_height, 4);
       reg_set("label", &show_label, 4);
+      reg_set("stbi", &only_stbi, 4);
       RegCloseKey(zreg);
    }
 }
@@ -1666,6 +1682,7 @@ void reg_load(void)
       reg_get("label", &show_label, 4);
       if (reg_get("cache", &temp, 4))
          max_cache_bytes = temp << 20;
+      reg_get("stbi", &only_stbi, 4);
       RegCloseKey(zreg);
    }
 }
@@ -1730,6 +1747,7 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
          // copy preferences into dialog
          SendMessage(GetDlgItem(hdlg, DIALOG_upsample), BM_SETCHECK, upsample_cubic, 0);
          SendMessage(GetDlgItem(hdlg, DIALOG_showlabel), BM_SETCHECK, show_label, 0);
+         SendMessage(GetDlgItem(hdlg, DIALOG_stbi_only), BM_SETCHECK, only_stbi, 0);
          for (i=0; i < 6; ++i)
             set_dialog_number(DIALOG_r1+i, alpha_background[0][i]);
          set_dialog_number(DIALOG_cachesize, max_cache_bytes >> 20);
@@ -1780,6 +1798,7 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                label_font_height = get_dialog_number(DIALOG_labelheight);
                upsample_cubic = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_upsample ), BM_GETCHECK,0,0);
                show_label     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showlabel), BM_GETCHECK,0,0);
+               only_stbi      = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_stbi_only), BM_GETCHECK,0,0);
 
                // if alpha_background changed, clear the cache of any images that used it                
                if (memcmp(alpha_background, cur, 6)) {
@@ -1827,6 +1846,33 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
    }
    return FALSE;
 }
+
+#ifdef PERFTEST
+void performance_test(void)
+{
+   int t1,t2;
+   int len,i;
+   uint8 *buffer = stb_file(cur_filename, &len);
+   if (buffer == NULL) return;
+   
+   t1 = timeGetTime();
+
+   for (i=0; i < 50; ++i) {
+      int x,y,n;
+      uint8 *result = imv_decode_from_memory(buffer, len, &x, &y, &n, 4);
+      free(result);
+   }
+
+   t2 = timeGetTime();
+   free(buffer);
+
+   {
+      char buffer[512];
+      sprintf(buffer, "Decode time: %f ms\n", (t2-t1)/50.0);
+      error(buffer);
+   }
+}
+#endif
 
 // missing VK definitions in old compiler
 #ifndef VK_OEM_PLUS
@@ -2017,6 +2063,11 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                extra_border = show_frame;
                if (cur) frame(cur);
                break;
+#ifdef PERFTEST
+            case 'D' | MY_CTRL:
+               performance_test();
+               break;
+#endif
 
             case 'P':
             case 'P' | MY_CTRL:
@@ -2066,6 +2117,11 @@ int cur_is_current(void)
    return !strcmp(cur_filename, source_c->filename);
 }
 
+#ifdef USE_FREEIMAGE
+static int FreeImagePresent;
+static int LoadFreeImage(void);
+#endif
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
    int argc;
@@ -2083,10 +2139,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
    inst = hInstance;
 
-   // concatenate the version number onto the help text, because
-   // we can't do this statically with the current build process
-   strcat(helptext_center, VERSION);
-
    // determine the number of threads to use in the resizer
    resize_threads = stb_min(stb_processor_count(), 16);
 resize_threads = 8;
@@ -2100,6 +2152,20 @@ resize_threads = 8;
 
    // load the registry preferences, if they're there (AFTER the above)
    reg_load();
+
+   // concatenate the version number onto the help text, because
+   // we can't do this statically with the current build process
+   strcat(helptext_center, VERSION);
+
+   // now try to LoadFreeImage _after_ we've already loaded the prefs;
+   // that way only_stbi can be used to suppress errors
+#ifdef USE_FREEIMAGE
+   if (LoadFreeImage()) {
+      strcat(helptext_center, "\nUsing FreeImage.dll");
+      open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.dds;*.gif;*.ico;*.jng;*.lbm;*.pcx;*.ppm;*.psd;*.tga;*.tiff\0";
+   }
+#endif
+   assert(helptext_center[sizeof(helptext_center)-1]==0);
 
    // create the main window class
    memset(&wndclass, 0, sizeof(wndclass));
@@ -2132,7 +2198,7 @@ resize_threads = 8;
       OPENFILENAME o;
       memset(&o, 0, sizeof(o));
       o.lStructSize = sizeof(o);
-      o.lpstrFilter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp\0";
+      o.lpstrFilter = open_filter;
       o.lpstrFile = filenamebuffer;
       filenamebuffer[0] = 0;
       o.nMaxFile = sizeof(filenamebuffer);
@@ -2156,7 +2222,7 @@ resize_threads = 8;
       if (!data)
          why = "Couldn't open file";
       else {
-         image_data = stbi_load_from_memory(data, len, &image_x, &image_y, &image_n, BPP);
+         image_data = imv_decode_from_memory(data, len, &image_x, &image_y, &image_n, BPP);
          if (image_data == NULL)
             why = stbi_failure_reason();
       }
@@ -2934,4 +3000,173 @@ void image_resize(Image *dest, Image *src)
       imfree(temp);
    }
 #endif
+}
+
+
+
+#ifdef USE_FREEIMAGE
+
+// FreeImage types
+
+typedef int FREE_IMAGE_FORMAT;
+typedef struct FIBITMAP FIBITMAP;
+typedef struct FIMEMORY FIMEMORY;
+
+typedef void (*FreeImage_OutputMessageFunction)(FREE_IMAGE_FORMAT fif, const char *msg);
+
+#define fitype(x)    typedef __declspec(dllimport) x __stdcall
+
+
+// FreeImage functions that we're going to import;
+fitype(void) freeimage_setoutputmessage(FreeImage_OutputMessageFunction omf);
+static freeimage_setoutputmessage *FreeImage_SetOutputMessage;
+
+fitype(FIMEMORY *) freeimage_openmemory(uint8 *data, unsigned size);
+static freeimage_openmemory *FreeImage_OpenMemory;
+
+fitype(void) freeimage_closememory(FIMEMORY *stream);
+static freeimage_closememory *FreeImage_CloseMemory;
+
+fitype(int) freeimage_seekmemory(FIMEMORY *stream, long offset, int origin);
+static freeimage_seekmemory *FreeImage_SeekMemory;
+
+fitype(FIBITMAP *) freeimage_loadfrommemory(FREE_IMAGE_FORMAT fif, FIMEMORY *fi, int flags);
+static freeimage_loadfrommemory *FreeImage_LoadFromMemory;
+
+fitype(void) freeimage_converttorawbits(BYTE *bits, FIBITMAP *dib, int pitch, unsigned bpp, unsigned red_mask, unsigned green_mask, unsigned blue_mask, BOOL topdown);
+static freeimage_converttorawbits *FreeImage_ConvertToRawBits;
+
+typedef __declspec(dllimport) void __stdcall freeimage_unload(FIBITMAP *dib);
+static freeimage_unload *FreeImage_Unload;
+
+typedef __declspec(dllimport) unsigned __stdcall freeimage_getwidth(FIBITMAP *dib);
+static freeimage_getwidth *FreeImage_GetWidth;
+
+typedef __declspec(dllimport) unsigned __stdcall freeimage_getheight(FIBITMAP *dib);
+static freeimage_getheight *FreeImage_GetHeight;
+
+typedef __declspec(dllimport) FREE_IMAGE_FORMAT __stdcall freeimage_getfiletypefrommemory(FIMEMORY *fi, int size);
+static freeimage_getfiletypefrommemory *FreeImage_GetFileTypeFromMemory;
+
+typedef __declspec(dllimport) FREE_IMAGE_FORMAT __stdcall freeimage_getfiffromfilename(const char *filename);
+static freeimage_getfiffromfilename *FreeImage_GetFIFFromFilename;
+
+typedef __declspec(dllimport) BYTE *__stdcall freeimage_getbits(FIBITMAP *dib);
+static freeimage_getbits *FreeImage_GetBits;
+
+typedef __declspec(dllimport) int __stdcall freeimage_istransparent(FIBITMAP *dib);
+static freeimage_istransparent *FreeImage_IsTransparent;
+
+static void
+FreeImageErrorHandler(FREE_IMAGE_FORMAT fif, const char *message)
+{
+    assert(!"FreeImage failure");
+}
+
+static HINSTANCE FreeImageDLL;
+
+FARPROC fifunc(char *str)
+{
+   FARPROC p = GetProcAddress(FreeImageDLL, str);
+   if (p == NULL)
+      FreeImagePresent = FALSE; // if something doesn't load, bail!
+   return p;
+}
+
+static int LoadFreeImage(void)
+{
+    static int InitializationAttempted;
+    if(!InitializationAttempted)
+    {
+        FreeImageDLL = LoadLibrary("FreeImage.dll");
+        if(FreeImageDLL)
+        {
+            FreeImagePresent = TRUE;
+            FreeImage_ConvertToRawBits = (freeimage_converttorawbits *)fifunc("_FreeImage_ConvertToRawBits@32");
+            FreeImage_GetBits = (freeimage_getbits *)fifunc("_FreeImage_GetBits@4");
+            FreeImage_GetFIFFromFilename = (freeimage_getfiffromfilename *)fifunc("_FreeImage_GetFIFFromFilename@4");
+            FreeImage_GetFileTypeFromMemory = (freeimage_getfiletypefrommemory *)fifunc("_FreeImage_GetFileTypeFromMemory@8");
+            FreeImage_GetHeight = (freeimage_getheight *)fifunc("_FreeImage_GetHeight@4");
+            FreeImage_GetWidth = (freeimage_getwidth *)fifunc("_FreeImage_GetWidth@4");
+            FreeImage_LoadFromMemory = (freeimage_loadfrommemory *)fifunc("_FreeImage_LoadFromMemory@12");
+            FreeImage_SetOutputMessage = (freeimage_setoutputmessage *)fifunc("_FreeImage_SetOutputMessage@4");
+            FreeImage_Unload = (freeimage_unload *)fifunc("_FreeImage_Unload@4");
+            FreeImage_OpenMemory = (freeimage_openmemory *)fifunc("_FreeImage_OpenMemory@8");
+            FreeImage_CloseMemory = (freeimage_closememory *)fifunc("_FreeImage_CloseMemory@4");
+            FreeImage_SeekMemory = (freeimage_seekmemory *)fifunc("_FreeImage_SeekMemory@12");
+            FreeImage_IsTransparent = (freeimage_istransparent *)fifunc("_FreeImage_IsTransparent@4");
+
+            if (!FreeImagePresent) {
+               if (!only_stbi)
+                  error("Invalid FreeImage.dll; disabling FreeImage support.");
+            } else
+               FreeImage_SetOutputMessage(FreeImageErrorHandler);
+        }
+
+        InitializationAttempted = TRUE;
+    }
+
+    return(FreeImagePresent);
+}
+
+uint8 *LoadImageWithFreeImage(FIMEMORY *fi, int *x, int *y, int *n, int n_req)
+{
+    uint8 *Result = 0;
+     FREE_IMAGE_FORMAT FileFormat = FreeImage_GetFileTypeFromMemory(fi, 0);
+     FIBITMAP *Bitmap;
+     if(FileFormat == -1)
+     {
+         // @TODO: propogate the filename to here
+         // bail!
+         return NULL;
+         // FileFormat = FreeImage_GetFIFFromFilename(FromFilename);
+     }
+
+     FreeImage_SeekMemory(fi, 0, SEEK_SET);
+
+     Bitmap = FreeImage_LoadFromMemory(FileFormat, fi, 0);
+     if(Bitmap)
+     {
+         int32 Width = FreeImage_GetWidth(Bitmap);
+         int32 Height = FreeImage_GetHeight(Bitmap);
+
+         Result = (uint8 *) malloc(Width * Height * BPP);
+         if(Result)
+         {
+             int i;
+             FreeImage_ConvertToRawBits(Result, Bitmap, BPP*Width, BPP*8, 0xff0000,0x00ff00,0xff, FALSE);
+#ifndef PERFTEST
+             for (i=0; i < Width*Height*BPP; i += BPP) {
+                uint8 t = Result[i];
+                Result[i] = Result[i+2];
+                Result[i+2] = t;
+             }
+#endif
+             *x = Width;
+             *y = Height;
+             *n = FreeImage_IsTransparent(Bitmap) ? 4 : 3;
+         }
+        
+         FreeImage_Unload(Bitmap);
+     }
+
+    return(Result);
+} 
+#endif
+
+static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, int *n, int n_req)
+{
+   uint8 *res = NULL;
+#ifdef USE_FREEIMAGE
+   if (!only_stbi) {
+      if (res == NULL && FreeImagePresent) {
+         FIMEMORY *fi = FreeImage_OpenMemory(mem,len);
+         res = LoadImageWithFreeImage(fi, x, y, n, n_req);
+         FreeImage_CloseMemory(fi);
+      }
+      if (res) return res;
+   }
+#endif
+   res = stbi_load_from_memory(mem, len, x, y, n, n_req);
+   return res;
 }
