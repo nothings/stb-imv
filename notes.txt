@@ -1,3 +1,10 @@
+  Version 0.94: Beta 5
+    * (bugfix: fix cacheing code to allow refreshing current image after flip etc.)
+    * (feature: use 'f' to flip image vertically, in case FreeImage sucks)
+    * change: change the border control keys to 'b' instead of 'f' for next feature
+    * feature: use FreeImage.dll if it's available
+    * bugfix: fix bug in right or bottom cursor region due to internal cleanup
+
   Version 0.93: Beta 4
     * bugfix: alter stb_image to support jpegs with weird header blocks
     * bugfix: exit after printing directory error message
