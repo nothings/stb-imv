@@ -1,6 +1,9 @@
   Version 0.94: Beta 5
     * (bugfix: fix cacheing code to allow refreshing current image after flip etc.)
     * (feature: use 'f' to flip image vertically, in case FreeImage sucks)
+    * feature: sort filenames to sort numbers in human-friendly order
+    * feature: show index within sorted list
+    * feature: ctrl-C puts current image filename (with full path) in the clipboard
     * change: change the border control keys to 'b' instead of 'f' for next feature
     * feature: use FreeImage.dll if it's available
     * bugfix: fix bug in right or bottom cursor region due to internal cleanup
