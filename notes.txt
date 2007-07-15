@@ -1,6 +1,4 @@
-  Version 0.94: Beta 5
-    * (bugfix: fix cacheing code to allow refreshing current image after flip etc.)
-    * (feature: use 'f' to flip image vertically, in case FreeImage sucks)
+  Version 0.94: Beta 5 (2007-07-15)
     * bugfix: changing image resize quality in preferences refreshes on OK
     * feature: sort filenames to sort numbers in human-friendly order
     * feature: show index within sorted list
