@@ -1926,8 +1926,11 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                   stb_mutex_end(cache_mutex);
                   // force a reload of the current image
                   advance(0);
-               } else if (old_cubic != upsample_cubic)
+               } else if (old_cubic != upsample_cubic) {
+                  free(cur_filename);
+                  cur_filename = NULL;
                   advance(0);
+               }
 
                // save the data out to the registry
                reg_save();
@@ -2449,6 +2452,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                pending_resize.size = qs;
                queue_resize(qs.w, qs.h, source_c, FALSE);
             }
+            //flush = FALSE;
          }
          qs.w = 0;
       }
