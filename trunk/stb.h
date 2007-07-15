@@ -1,4 +1,4 @@
-/* stb-1.90 -- Sean's Tool Box -- public domain -- http://nothings.org/stb.h
+/* stb-1.93 -- Sean's Tool Box -- public domain -- http://nothings.org/stb.h
           no warranty is offered or implied; use this code at your own risk
 
 This is a single header file with a bunch of useful utilities
@@ -118,11 +118,15 @@ Bug reports, feature requests, etc. can be mailed to 'sean' at the above site.
 
 3. Version History
 
-   1.90   stb_mutex uses CRITICAL_REGION; new stb_sync primitive for thread joining;
-          workqueue supports stb_sync instead of stb_semaphore
-   1.89   support ';' in constant-string wildcards; stb_mutex wrapper (can implement
-          with EnterCriticalRegion eventually)
-   1.88   portable threading API (only for win32 so far); worker thread queueing
+   1.94   stb_dirtree; rename stb_extra to stb_ptrmap
+   1.93   stb_sem_new() API cleanup (no blockflag--starts blocked; use 'extra')
+   1.92   stb_threadqueue--multi reader/writer queue, fixed size or resizeable
+   1.91   stb_bgio_* for reading disk asynchronously
+   1.90   stb_mutex uses CRITICAL_REGION; new stb_sync primitive for thread
+          joining; workqueue supports stb_sync instead of stb_semaphore
+   1.89   support ';' in constant-string wildcards; stb_mutex wrapper (can
+          implement with EnterCriticalRegion eventually)
+   1.88   portable threading API (only for win32 so far); worker thread queue
    1.87   fix wildcard handling in stb_readdir_recursive
    1.86   support ';' in wildcards
    1.85   make stb_regex work with non-constant strings;
@@ -414,12 +418,12 @@ string dictionary     [ hash table from strings to pointers ]
 
 extra-data dictiontary  [ hash table from pointers to pointers ]
 
-   stb_extra* stb_extra_new(void)      -- dictionary from void* to void*
-   void       stb_extra_delete(extra,func)-- free dict; func(v) for all values
-   void *     stb_extra_get(dict,ptr)  -- get value for pointer (NULL if none)
-   void       stb_extra_add(dict,p,v)  -- bind key p1 to key p2 in dict
-   void       stb_extra_set(dict,p,v)  -- set key p1 to key p2, add if needed
-   void *     stb_extra_remove(dict,p1)-- remove key p1, retval=value for p1
+   stb_ptrmap *stb_ptrmap_new(void)    -- dictionary from void* to void*
+   void      stb_ptrmap_delete(map,func)--free dict; func(v) for all values
+   void *    stb_ptrmap_get(dict,ptr)  -- get value for pointer (NULL if none)
+   void      stb_ptrmap_add(dict,p,v)  -- bind key p1 to key p2 in dict
+   void      stb_ptrmap_set(dict,p,v)  -- set key p1 to key p2, add if needed
+   void *    stb_ptrmap_remove(dict,p1)-- remove key p1, retval=value for p1
 
 portable 32-bit random numbers via Mersenne Twister or LCG (BCPL generator)
   void    stb_srand(uint32 n)        -- set seed
@@ -744,10 +748,11 @@ image -- generic 32-bit image structure, fast alpha blend operations
 //@ single header file which should be located <a href="stb.h">here</a>.
 //@ Generally the most recent version should be available on the internet at
 //@ <a href="http://nothings.org/stb.h">http://nothings.org/stb.h</a>.
-//@ <p>Some infrequently used components have been removeed and are
-//@ available separately: <a href="http://nothings.org/stb_file.h">compression
-//@ and other file ops</a> and <a href="http://nothings.org/stb_image.h">image
-//@ and sampling</a>.
+//@ <p>Some infrequently used components have been removed and are
+//@ available separately:
+//@ <a href="http://nothings.org/stb_file.h">variable-sized item storage in
+//@ files</a> and <a href="http://nothings.org/stb_image.h">image and
+//@ sampling</a>.
 
 #ifndef STB__INCLUDE_STB_H
 #define STB__INCLUDE_STB_H
@@ -822,10 +827,10 @@ image -- generic 32-bit image structure, fast alpha blend operations
    #endif
    
    #ifndef deg2rad
-   #define deg2rad(a)  ((a)*M_PI/180)
+   #define deg2rad(a)  ((a)*(M_PI/180))
    #endif
    #ifndef rad2deg
-   #define rad2deg(a)  ((a)/M_PI*180)
+   #define rad2deg(a)  ((a)*(180/M_PI))
    #endif
    
    #ifndef swap
@@ -4258,18 +4263,19 @@ static void STB_(N, rehash)(TYPE *a, int count)                               \
 
 //////////////////////////////////////////////////////////////////////////////
 //
-//                        stb_extra
+//                        stb_ptrmap
 //
-// An stb_extra data structure lets you store "extra" data associated with
-// pointers. You determine the size and type of the data to store; stb_extra
-// just gives you O(1) access to it.
+// An stb_ptrmap data structure is an O(1) hash table between pointers. One
+// application is to let you store "extra" data associated with pointers,
+// which is why it was originally called stb_extra.
 
 //$ SKIP!
-stb_declare_hash(STB_EXTERN, stb_extra, stb_extra_, void *, void *)
+stb_declare_hash(STB_EXTERN, stb_ptrmap, stb_ptrmap_, void *, void *)
 //$ SKIP!
 stb_declare_hash(STB_EXTERN, stb_idict, stb_idict_, stb_int32, stb_int32)
 
-STB_EXTERN void        stb_extra_delete(stb_extra *e, void (*free_func)(void *));
+STB_EXTERN void        stb_ptrmap_delete(stb_ptrmap *e, void (*free_func)(void *));
+STB_EXTERN stb_ptrmap *stb_ptrmap_new(void);
 
 STB_EXTERN stb_idict * stb_idict_new_size(int size);
 STB_EXTERN void stb_idict_remove_all(stb_idict *e);
@@ -4279,11 +4285,16 @@ STB_EXTERN void stb_idict_remove_all(stb_idict *e);
 #define STB_EMPTY ((void *) 2)
 #define STB_EDEL  ((void *) 6)
 
-stb_define_hash_base(stb_extra, STB_nofields, stb_extra_,0.85f,       
+stb_define_hash_base(stb_ptrmap, STB_nofields, stb_ptrmap_,0.85f,       
               void *,STB_EMPTY,STB_EDEL,STB_nocopy,STB_nodelete,STB_nosafe,STB_equal,return stb_hashptr(k);,
               void *,STB_nullvalue,NULL)
 
-void stb_extra_delete(stb_extra *e, void (*free_func)(void *))
+stb_ptrmap *stb_ptrmap_new(void)
+{
+   return stb_ptrmap_create();
+}
+
+void stb_ptrmap_delete(stb_ptrmap *e, void (*free_func)(void *))
 {
    int i;
    if (free_func)
@@ -4293,7 +4304,7 @@ void stb_extra_delete(stb_extra *e, void (*free_func)(void *))
                free(e->table[i].v); // allow STB_MALLOC_WRAPPER to operate
             else
                free_func(e->table[i].v);
-   stb_extra_destroy(e);
+   stb_ptrmap_destroy(e);
 }
 
 // extra fields needed for stua_dict
@@ -5003,7 +5014,7 @@ int stb_feq(char *s1, char *s2)
    return !stb_fcmp_core(f,g);
 }
 
-static stb_extra *stb__files;
+static stb_ptrmap *stb__files;
 
 typedef struct
 {
@@ -5047,11 +5058,11 @@ FILE *  stb_fopen(char *filename, char *mode)
       if (f != NULL) {
          stb__file_data *d = (stb__file_data *) malloc(sizeof(*d));
          if (!d) { assert(0);  /* NOTREACHED */fclose(f); return NULL; }
-         if (stb__files == NULL) stb__files = stb_extra_create();
+         if (stb__files == NULL) stb__files = stb_ptrmap_create();
          d->temp_name = strdup(temp_full);
          d->name      = strdup(name_full);
          d->errors    = 0;
-         stb_extra_add(stb__files, f, d);
+         stb_ptrmap_add(stb__files, f, d);
          return f;
       }
    }
@@ -5071,9 +5082,9 @@ int     stb_fclose(FILE *f, int keep)
 
    fclose(f);
 
-   if (stb__files && stb_extra_remove(stb__files, f, (void **) &d)) {
+   if (stb__files && stb_ptrmap_remove(stb__files, f, (void **) &d)) {
       if (stb__files->count == 0) {
-         stb_extra_destroy(stb__files);
+         stb_ptrmap_destroy(stb__files);
          stb__files = NULL;
       }
    } else
@@ -5394,7 +5405,7 @@ char **stb_readdir_recursive_n(char *dir, char **filespecs, int num_specs)
 char **stb_readdir_recursive(char *dir, char *filespec)
 {
    char *filespecs[2] = { filespec, NULL };
-   return stb_readdir_recursive_n(dir, filespecs, 1);
+   return stb_readdir_recursive_n(dir, filespecs, filespec ? 1 : 0);
 }
 
 void stb_delete_directory_recursive(char *dir)
@@ -5420,6 +5431,111 @@ void stb_delete_directory_recursive(char *dir)
 
 #endif
 
+//////////////////////////////////////////////////////////////////////////////
+//
+//   construct trees from filenames; useful for cmirror summaries
+
+typedef struct stb_dirtree stb_dirtree;
+
+struct stb_dirtree
+{
+   STB__ARR(stb_dirtree *) subdirs;
+
+   // make convenient for stb_summarize_tree
+   int num_subdir;
+   float weight;
+
+   // actual data
+   char *fullpath;
+   char *relpath;
+   STB__ARR(char *) files;
+};
+
+STB_EXTERN stb_dirtree *stb_dirtree_from_files_relative(char *src, char **filelist, int count);
+STB_EXTERN stb_dirtree *stb_dirtree_from_files(char **filelist, int count);
+STB_EXTERN int stb_dir_is_prefix(char *dir, int dirlen, char *file);
+
+#ifdef STB_DEFINE
+
+int stb_dir_is_prefix(char *dir, int dirlen, char *file)
+{
+   if (dirlen == 0) return TRUE;
+   if (stb_strnicmp(dir, file, dirlen)) return FALSE;
+   if (file[dirlen] == '/' || file[dirlen] == '\\') return TRUE;
+   return FALSE;
+}
+
+stb_dirtree *stb_dirtree_from_files_relative(char *src, char **filelist, int count)
+{
+   char buffer1[1024];
+   int i;
+   int dlen = strlen(src), elen;
+   stb_dirtree *d;
+   STB__ARR(char *) descendents = NULL;
+   STB__ARR(char *) files = NULL;
+   char *s;
+   if (!count) return NULL;
+   // first find all the ones that belong here... note this is will take O(NM) with N files and M subdirs
+   for (i=0; i < count; ++i) {
+      if (stb_dir_is_prefix(src, dlen, filelist[i])) {
+         stb_arr_push(descendents, filelist[i]);
+      }
+   }
+   if (descendents == NULL)
+      return NULL;
+   elen = dlen;
+   // skip a leading slash
+   if (elen == 0 && (descendents[0][0] == '/' || descendents[0][0] == '\\'))
+      ++elen;
+   else if (elen)
+      ++elen;
+   // now extract all the ones that have their root here
+   for (i=0; i < stb_arr_len(descendents);) {
+      if (!stb_strchr2(descendents[i]+elen, '/', '\\')) {
+         stb_arr_push(files, descendents[i]);
+         descendents[i] = descendents[stb_arr_len(descendents)-1];
+         stb_arr_pop(descendents);
+      } else
+         ++i;
+   }
+   // now create a record
+   d = (stb_dirtree *) malloc(sizeof(*d));
+   d->files = files;
+   d->subdirs = NULL;
+   d->fullpath = strdup(src);
+   s = stb_strrchr2(d->fullpath, '/', '\\');
+   if (s)
+      ++s;
+   else
+      s = d->fullpath;
+   d->relpath = s;
+   // now create the children
+   stb_cmpoffset(0);
+   qsort(descendents, stb_arr_len(descendents), sizeof(char *), stb_qsort_stricmp);
+   buffer1[0] = 0;
+   for (i=0; i < stb_arr_len(descendents); ++i) {
+      char buffer2[1024];
+      char *s = descendents[i] + elen, *t;
+      t = stb_strchr2(s, '/', '\\');
+      assert(t);
+      stb_strncpy(buffer2, descendents[i], t-descendents[i]+1);
+      if (stricmp(buffer1, buffer2)) {
+         stb_dirtree *t = stb_dirtree_from_files_relative(buffer2, descendents, stb_arr_len(descendents));
+         assert(t != NULL);
+         strcpy(buffer1, buffer2);
+         stb_arr_push(d->subdirs, t);
+      }
+   }
+   d->num_subdir = stb_arr_len(d->subdirs);
+   d->weight = 0;
+   return d;
+}
+
+stb_dirtree *stb_dirtree_from_files(char **filelist, int count)
+{
+   return stb_dirtree_from_files_relative("", filelist, count);
+}
+#endif
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -6850,7 +6966,7 @@ void stb_dupe_finish(stb_dupe *sd)
 
 #define stb__define_sort(MODE, FUNCNAME, TYPE, COMPARE)                       \
                                                                               \
-static void STB_(FUNCNAME,_ins_sort)(TYPE *p, int n)                          \
+void STB_(FUNCNAME,_ins_sort)(TYPE *p, int n)                          \
 {                                                                             \
    int i,j;                                                                   \
    for (i=1; i < n; ++i) {                                                    \
@@ -6868,7 +6984,7 @@ static void STB_(FUNCNAME,_ins_sort)(TYPE *p, int n)                          \
    }                                                                          \
 }                                                                             \
                                                                               \
-static void STB_(FUNCNAME,_quicksort)(TYPE *p, int n)                         \
+void STB_(FUNCNAME,_quicksort)(TYPE *p, int n)                         \
 {                                                                             \
    /* threshhold for transitioning to insertion sort */                       \
    while (n > 12) {                                                           \
@@ -8529,6 +8645,2014 @@ void stb__introspect(char *path, char *file, stb_info_struct *compiled)
 #endif
 #endif
 
+//////////////////////////////////////////////////////////////////////////////
+//
+//             STB-C sliding-window dictionary compression
+//
+//  This uses a DEFLATE-style sliding window, but no bitwise entropy.
+//  Everything is on byte boundaries, so you could then apply a byte-wise
+//  entropy code, though that's nowhere near as effective.
+//
+//  An STB-C stream begins with a 16-byte header:
+//      4 bytes: 0x57 0xBC 0x00 0x00
+//      8 bytes: big-endian size of decompressed data, 64-bits
+//      4 bytes: big-endian size of window (how far back decompressor may need)
+//
+//  The following symbols appear in the stream (these were determined ad hoc,
+//  not by analysis):
+//
+//  [dict]      00000100 yyyyyyyy yyyyyyyy yyyyyyyy xxxxxxxx xxxxxxxx
+//  [END]       00000101 11111010 cccccccc cccccccc cccccccc cccccccc
+//  [dict]      00000110 yyyyyyyy yyyyyyyy yyyyyyyy xxxxxxxx
+//  [literals]  00000111 zzzzzzzz zzzzzzzz
+//  [literals]  00001zzz zzzzzzzz
+//  [dict]      00010yyy yyyyyyyy yyyyyyyy xxxxxxxx xxxxxxxx
+//  [dict]      00011yyy yyyyyyyy yyyyyyyy xxxxxxxx
+//  [literals]  001zzzzz
+//  [dict]      01yyyyyy yyyyyyyy xxxxxxxx
+//  [dict]      1xxxxxxx yyyyyyyy
+//
+//      xxxxxxxx: match length - 1
+//      yyyyyyyy: backwards distance - 1
+//      zzzzzzzz: num literals - 1
+//      cccccccc: adler32 checksum of decompressed data
+//   (all big-endian)
+
+
+STB_EXTERN stb_uint stb_decompress_length(stb_uchar *input);
+STB_EXTERN stb_uint stb_decompress(stb_uchar *out,stb_uchar *in,stb_uint len);
+STB_EXTERN stb_uint stb_compress  (stb_uchar *out,stb_uchar *in,stb_uint len);
+STB_EXTERN void stb_compress_window(int z);
+STB_EXTERN void stb_compress_hashsize(unsigned int z);
+
+STB_EXTERN int stb_compress_tofile(char *filename, char *in,  stb_uint  len);
+STB_EXTERN int stb_compress_intofile(FILE *f, char *input,    stb_uint  len);
+STB_EXTERN char *stb_decompress_fromfile(char *filename,      stb_uint *len);
+
+STB_EXTERN int stb_compress_stream_start(FILE *f);
+STB_EXTERN void stb_compress_stream_end(int close);
+STB_EXTERN void stb_write(char *data, int data_len);
+
+#ifdef STB_DEFINE
+
+stb_uint stb_decompress_length(stb_uchar *input)
+{
+   return (input[8] << 24) + (input[9] << 16) + (input[10] << 8) + input[11];
+}
+
+////////////////////           decompressor         ///////////////////////
+
+// simple implementation that just writes whole thing into big block
+
+static unsigned char *stb__barrier;
+static unsigned char *stb__barrier2;
+static unsigned char *stb__barrier3;
+static unsigned char *stb__barrier4;
+
+static stb_uchar *stb__dout;
+static void stb__match(stb_uchar *data, stb_uint length)
+{
+   // INVERSE of memmove... write each byte before copying the next...
+   assert (stb__dout + length <= stb__barrier);
+   if (stb__dout + length > stb__barrier) { stb__dout += length; return; }
+   if (data < stb__barrier4) { stb__dout = stb__barrier+1; return; }
+   while (length--) *stb__dout++ = *data++;
+}
+
+static void stb__lit(stb_uchar *data, stb_uint length)
+{
+   assert (stb__dout + length <= stb__barrier);
+   if (stb__dout + length > stb__barrier) { stb__dout += length; return; }
+   if (data < stb__barrier2) { stb__dout = stb__barrier+1; return; }
+   memcpy(stb__dout, data, length);
+   stb__dout += length;
+}
+
+#define stb__in2(x)   ((i[x] << 8) + i[(x)+1])
+#define stb__in3(x)   ((i[x] << 16) + stb__in2((x)+1))
+#define stb__in4(x)   ((i[x] << 24) + stb__in3((x)+1))
+
+static stb_uchar *stb_decompress_token(stb_uchar *i)
+{
+   if (*i >= 0x20) { // use fewer if's for cases that expand small
+      if (*i >= 0x80)       stb__match(stb__dout-i[1]-1, i[0] - 0x80 + 1), i += 2;
+      else if (*i >= 0x40)  stb__match(stb__dout-(stb__in2(0) - 0x4000 + 1), i[2]+1), i += 3;
+      else /* *i >= 0x20 */ stb__lit(i+1, i[0] - 0x20 + 1), i += 1 + (i[0] - 0x20 + 1);
+   } else { // more ifs for cases that expand large, since overhead is amortized
+      if (*i >= 0x18)       stb__match(stb__dout-(stb__in3(0) - 0x180000 + 1), i[3]+1), i += 4;
+      else if (*i >= 0x10)  stb__match(stb__dout-(stb__in3(0) - 0x100000 + 1), stb__in2(3)+1), i += 5;
+      else if (*i >= 0x08)  stb__lit(i+2, stb__in2(0) - 0x0800 + 1), i += 2 + (stb__in2(0) - 0x0800 + 1);
+      else if (*i == 0x07)  stb__lit(i+3, stb__in2(1) + 1), i += 3 + (stb__in2(1) + 1);
+      else if (*i == 0x06)  stb__match(stb__dout-(stb__in3(1)+1), i[4]+1), i += 5;
+      else if (*i == 0x04)  stb__match(stb__dout-(stb__in3(1)+1), stb__in2(4)+1), i += 6;
+   }
+   return i;
+}
+
+stb_uint stb_decompress(stb_uchar *output, stb_uchar *i, stb_uint length)
+{
+   stb_uint olen;
+   if (stb__in4(0) != 0x57bC0000) return 0;
+   if (stb__in4(4) != 0)          return 0; // error! stream is > 4GB
+   olen = stb_decompress_length(i);
+   stb__barrier2 = i;
+   stb__barrier3 = i+length;
+   stb__barrier = output + olen;
+   stb__barrier4 = output;
+   i += 16;
+
+   stb__dout = output;
+   while (1) {
+      stb_uchar *old_i = i;
+      i = stb_decompress_token(i);
+      if (i == old_i) {
+         if (*i == 0x05 && i[1] == 0xfa) {
+            assert(stb__dout == output + olen);
+            if (stb__dout != output + olen) return 0;
+            if (stb_adler32(1, output, olen) != (stb_uint) stb__in4(2))
+               return 0;
+            return olen;
+         } else {
+            assert(0); /* NOTREACHED */
+            return 0;
+         }
+      }
+      assert(stb__dout <= output + olen); 
+      if (stb__dout > output + olen)
+         return 0;
+   }
+}
+
+char *stb_decompress_fromfile(char *filename, unsigned int *len)
+{
+   unsigned int n;
+   char *q;
+   unsigned char *p;
+   FILE *f = fopen(filename, "rb");   if (f == NULL) return NULL;
+   fseek(f, 0, SEEK_END);
+   n = ftell(f);
+   fseek(f, 0, SEEK_SET);
+   p = (unsigned char * ) malloc(n); if (p == NULL) return NULL;
+   fread(p, 1, n, f);
+   fclose(f);
+   if (p == NULL) return NULL;
+   if (p[0] != 0x57 || p[1] != 0xBc || p[2] || p[3]) { free(p); return NULL; }
+   q = (char *) malloc(stb_decompress_length(p)+1);
+   if (!q) { free(p); free(p); return NULL; }
+   *len = stb_decompress((unsigned char *) q, p, n);
+   if (*len) q[*len] = 0;
+   free(p);
+   return q;
+}
+
+#if 0
+//  streaming decompressor
+
+static struct
+{
+   stb__uchar *in_buffer;
+   stb__uchar *match;
+
+   stb__uint pending_literals;
+   stb__uint pending_match;
+} xx;
+
+
+
+static void stb__match(stb_uchar *data, stb_uint length)
+{
+   // INVERSE of memmove... write each byte before copying the next...
+   assert (stb__dout + length <= stb__barrier);
+   if (stb__dout + length > stb__barrier) { stb__dout += length; return; }
+   if (data < stb__barrier2) { stb__dout = stb__barrier+1; return; }
+   while (length--) *stb__dout++ = *data++;
+}
+
+static void stb__lit(stb_uchar *data, stb_uint length)
+{
+   assert (stb__dout + length <= stb__barrier);
+   if (stb__dout + length > stb__barrier) { stb__dout += length; return; }
+   if (data < stb__barrier2) { stb__dout = stb__barrier+1; return; }
+   memcpy(stb__dout, data, length);
+   stb__dout += length;
+}
+
+static void sx_match(stb_uchar *data, stb_uint length)
+{
+   xx.match = data;
+   xx.pending_match = length;
+}
+
+static void sx_lit(stb_uchar *data, stb_uint length)
+{
+   xx.pending_lit = length;
+}
+
+static int stb_decompress_token_state(void)
+{
+   stb__uchar *i = xx.in_buffer;
+
+   if (*i >= 0x20) { // use fewer if's for cases that expand small
+      if (*i >= 0x80)       sx_match(stb__dout-i[1]-1, i[0] - 0x80 + 1), i += 2;
+      else if (*i >= 0x40)  sx_match(stb__dout-(stb__in2(0) - 0x4000 + 1), i[2]+1), i += 3;
+      else /* *i >= 0x20 */ sx_lit(i+1, i[0] - 0x20 + 1), i += 1;
+   } else { // more ifs for cases that expand large, since overhead is amortized
+      if (*i >= 0x18)       sx_match(stb__dout-(stb__in3(0) - 0x180000 + 1), i[3]+1), i += 4;
+      else if (*i >= 0x10)  sx_match(stb__dout-(stb__in3(0) - 0x100000 + 1), stb__in2(3)+1), i += 5;
+      else if (*i >= 0x08)  sx_lit(i+2, stb__in2(0) - 0x0800 + 1), i += 2;
+      else if (*i == 0x07)  sx_lit(i+3, stb__in2(1) + 1), i += 3;
+      else if (*i == 0x06)  sx_match(stb__dout-(stb__in3(1)+1), i[4]+1), i += 5;
+      else if (*i == 0x04)  sx_match(stb__dout-(stb__in3(1)+1), stb__in2(4)+1), i += 6;
+      else return 0;
+   }
+   xx.in_buffer = i;
+   return 1;
+}
+#endif
+
+
+
+////////////////////           compressor         ///////////////////////
+
+static unsigned int stb_matchlen(stb_uchar *m1, stb_uchar *m2, stb_uint maxlen)
+{
+   stb_uint i;
+   for (i=0; i < maxlen; ++i)
+      if (m1[i] != m2[i]) return i;
+   return i;
+}
+
+// simple implementation that just takes the source data in a big block
+
+static stb_uchar *stb__out;
+static FILE      *stb__outfile;
+static stb_uint   stb__outbytes;
+
+static void stb__write(unsigned char v)
+{
+   fputc(v, stb__outfile);
+   ++stb__outbytes;
+}
+
+#define stb_out(v)    (stb__out ? *stb__out++ = (stb_uchar) (v) : stb__write((stb_uchar) (v)))
+
+static void stb_out2(stb_uint v)
+{
+   stb_out(v >> 8);
+   stb_out(v);
+}
+
+static void stb_out3(stb_uint v) { stb_out(v >> 16); stb_out(v >> 8); stb_out(v); }
+static void stb_out4(stb_uint v) { stb_out(v >> 24); stb_out(v >> 16);
+                                   stb_out(v >> 8 ); stb_out(v);                  }
+
+static void outliterals(stb_uchar *in, int numlit)
+{
+   while (numlit > 65536) {
+      outliterals(in,65536);
+      in     += 65536;
+      numlit -= 65536;
+   }
+
+   if      (numlit ==     0)    ;
+   else if (numlit <=    32)    stb_out (0x000020 + numlit-1);
+   else if (numlit <=  2048)    stb_out2(0x000800 + numlit-1);
+   else /*  numlit <= 65536) */ stb_out3(0x070000 + numlit-1);
+
+   if (stb__out) {
+      memcpy(stb__out,in,numlit);
+      stb__out += numlit;
+   } else
+      fwrite(in, 1, numlit, stb__outfile);
+}
+
+static int stb__window = 0x40000; // 256K
+void stb_compress_window(int z)
+{
+   if (z >= 0x1000000) z = 0x1000000; // limit of implementation
+   if (z <      0x100) z = 0x100;   // insanely small
+   stb__window = z;
+}
+
+static int stb_not_crap(int best, int dist)
+{
+   return   ((best > 2  &&  dist <= 0x00100)     
+          || (best > 5  &&  dist <= 0x04000)
+          || (best > 7  &&  dist <= 0x80000));
+}
+
+static  stb_uint stb__hashsize = 32768;
+void stb_compress_hashsize(unsigned int y)
+{
+   unsigned int z = 1024;
+   while (z < y) z <<= 1;
+   stb__hashsize = z >> 2;   // pass in bytes, store #pointers
+}
+
+// note that you can play with the hashing functions all you
+// want without needing to change the decompressor
+#define stb__hc(q,h,c)      (((h) << 7) + ((h) >> 25) + q[c])
+#define stb__hc2(q,h,c,d)   (((h) << 14) + ((h) >> 18) + (q[c] << 7) + q[d])
+#define stb__hc3(q,c,d,e)   ((q[c] << 14) + (q[d] << 7) + q[e])
+
+static stb_uint32 stb__running_adler;
+
+static int stb_compress_chunk(stb_uchar *history,
+                              stb_uchar *start,
+                              stb_uchar *end,
+                              int length,
+                              int *pending_literals,
+                              stb_uchar **chash,
+                              stb_uint mask)
+{
+   int window = stb__window;
+   stb_uint match_max;
+   stb_uchar *lit_start = start - *pending_literals;
+   stb_uchar *q = start;
+
+   #define STB__SCRAMBLE(h)   (((h) + ((h) >> 16)) & mask)
+
+   // stop short of the end so we don't scan off the end doing
+   // the hashing; this means we won't compress the last few bytes
+   // unless they were part of something longer
+   while (q < start+length && q+12 < end) {
+      int m;
+      stb_uint h1,h2,h3,h4, h;
+      stb_uchar *t;
+      int best = 2, dist=0;
+
+      if (q+65536 > end)
+         match_max = end-q;
+      else
+         match_max = 65536;
+
+      #define stb__nc(b,d)  ((d) <= window && ((b) > 9 || stb_not_crap(b,d)))
+
+      #define STB__TRY(t,p)  /* avoid retrying a match we already tried */ \
+                      if (p ? dist != q-t : 1)                             \
+                      if ((m = stb_matchlen(t, q, match_max)) > best)     \
+                      if (stb__nc(m,q-(t)))                                \
+                          best = m, dist = q - (t)
+
+      // rather than search for all matches, only try 4 candidate locations,
+      // chosen based on 4 different hash functions of different lengths.
+      // this strategy is inspired by LZO; hashing is unrolled here using the
+      // 'hc' macro
+      h = stb__hc3(q,0, 1, 2); h1 = STB__SCRAMBLE(h);
+                                      t = chash[h1]; if (t) STB__TRY(t,0);
+      h = stb__hc2(q,h, 3, 4); h2 = STB__SCRAMBLE(h);
+      h = stb__hc2(q,h, 5, 6);        t = chash[h2]; if (t) STB__TRY(t,1);
+      h = stb__hc2(q,h, 7, 8); h3 = STB__SCRAMBLE(h);
+      h = stb__hc2(q,h, 9,10);        t = chash[h3]; if (t) STB__TRY(t,1);
+      h = stb__hc2(q,h,11,12); h4 = STB__SCRAMBLE(h);
+                                      t = chash[h4]; if (t) STB__TRY(t,1);
+
+      // because we use a shared hash table, can only update it
+      // _after_ we've probed all of them
+      chash[h1] = chash[h2] = chash[h3] = chash[h4] = q;
+
+      if (best > 2)
+         assert(dist > 0);
+
+      // see if our best match qualifies
+      if (best < 3) { // fast path literals
+         ++q;
+      } else if (best > 2  &&  best <= 0x80    &&  dist <= 0x100) {
+         outliterals(lit_start, q-lit_start); lit_start = (q += best);
+         stb_out(0x80 + best-1);
+         stb_out(dist-1);
+      } else if (best > 5  &&  best <= 0x100   &&  dist <= 0x4000) {
+         outliterals(lit_start, q-lit_start); lit_start = (q += best);
+         stb_out2(0x4000 + dist-1);       
+         stb_out(best-1);
+      } else if (best > 7  &&  best <= 0x100   &&  dist <= 0x80000) {
+         outliterals(lit_start, q-lit_start); lit_start = (q += best);
+         stb_out3(0x180000 + dist-1);     
+         stb_out(best-1);
+      } else if (best > 8  &&  best <= 0x10000 &&  dist <= 0x80000) {
+         outliterals(lit_start, q-lit_start); lit_start = (q += best);
+         stb_out3(0x100000 + dist-1);     
+         stb_out2(best-1);
+      } else if (best > 9                      &&  dist <= 0x1000000) {
+         outliterals(lit_start, q-lit_start); lit_start = (q += best);
+         if (best <= 0x100) {
+            stb_out(0x06);
+            stb_out3(dist-1);
+            stb_out(best-1);
+         } else {
+            stb_out(0x04);
+            stb_out3(dist-1);
+            stb_out2(best-1);
+         }
+      } else {  // fallback literals if no match was a balanced tradeoff
+         ++q;
+      }
+   }
+
+   // if we didn't get all the way, add the rest to literals
+   if (q-start < length)
+      q = start+length;
+
+   // the literals are everything from lit_start to q
+   *pending_literals = (q - lit_start);
+
+   stb__running_adler = stb_adler32(stb__running_adler, start, q - start);
+   return q - start;
+}
+
+static int stb_compress_inner(stb_uchar *input, stb_uint length)
+{
+   int literals = 0;
+   stb_uint len,i;
+
+   stb_uchar **chash;
+   chash = (stb_uchar**) malloc(stb__hashsize * sizeof(stb_uchar*));
+   if (chash == NULL) return 0; // failure
+   for (i=0; i < stb__hashsize; ++i)
+      chash[i] = NULL;
+
+   // stream signature
+   stb_out(0x57); stb_out(0xbc);
+   stb_out2(0);
+
+   stb_out4(0);       // 64-bit length requires 32-bit leading 0
+   stb_out4(length);
+   stb_out4(stb__window);
+
+   stb__running_adler = 1;
+
+   len = stb_compress_chunk(input, input, input+length, length, &literals, chash, stb__hashsize-1);
+   assert(len == length);
+
+   outliterals(input+length - literals, literals);
+
+   free(chash);
+
+   stb_out2(0x05fa); // end opcode
+
+   stb_out4(stb__running_adler);
+
+   return 1; // success
+}
+
+stb_uint stb_compress(stb_uchar *out, stb_uchar *input, stb_uint length)
+{
+   stb__out = out;
+   stb__outfile = NULL;
+
+   stb_compress_inner(input, length);
+
+   return stb__out - out;
+}
+
+int stb_compress_tofile(char *filename, char *input, unsigned int length)
+{
+   int maxlen = length + 512 + (length >> 2); // total guess
+   char *buffer = (char *) malloc(maxlen);
+   int blen = stb_compress((stb_uchar*)buffer, (stb_uchar*)input, length);
+   
+   stb__out = NULL;
+   stb__outfile = fopen(filename, "wb");
+   if (!stb__outfile) return 0;
+
+   stb__outbytes = 0;
+
+   if (!stb_compress_inner((stb_uchar*)input, length))
+      return 0;
+
+   fclose(stb__outfile);
+
+   return stb__outbytes;
+}
+
+int stb_compress_intofile(FILE *f, char *input, unsigned int length)
+{
+   int maxlen = length + 512 + (length >> 2); // total guess
+   //char *buffer = (char*)malloc(maxlen);
+   //int blen = stb_compress((stb_uchar*)buffer, (stb_uchar*)input, length);
+   
+   stb__out = NULL;
+   stb__outfile = f;
+   if (!stb__outfile) return 0;
+
+   stb__outbytes = 0;
+
+   if (!stb_compress_inner((stb_uchar*)input, length))
+      return 0;
+
+   return stb__outbytes;
+}
+
+//////////////////////    streaming I/O version    /////////////////////
+
+
+static stb_uint stb_out_backpatch_id(void)
+{
+   if (stb__out)
+      return (stb_uint) stb__out;
+   else
+      return ftell(stb__outfile);
+}
+
+static void stb_out_backpatch(stb_uint id, stb_uint value)
+{
+   stb_uchar data[4] = { value >> 24, value >> 16, value >> 8, value };
+   if (stb__out) {
+      memcpy((void *) id, data, 4);
+   } else {
+      stb_uint where = ftell(stb__outfile);
+      fseek(stb__outfile, id, SEEK_SET);
+      fwrite(data, 4, 1, stb__outfile);
+      fseek(stb__outfile, where, SEEK_SET);
+   }
+}
+
+// ok, the wraparound buffer was a total failure. let's instead
+// use a copying-in-place buffer, which lets us share the code.
+// This is way less efficient but it'll do for now.
+
+static struct
+{
+   stb_uchar *buffer;
+   int size;           // physical size of buffer in bytes
+
+   int valid;          // amount of valid data in bytes
+   int start;          // bytes of data already output
+
+   int window;
+   int fsize;
+
+   int pending_literals; // bytes not-quite output but counted in start
+   int length_id;
+
+   stb_uint total_bytes;
+
+   stb_uchar **chash;
+   stb_uint    hashmask;
+} xtb;
+
+static int stb_compress_streaming_start(void)
+{
+   stb_uint i;
+   xtb.size = stb__window * 3;
+   xtb.buffer = (stb_uchar*)malloc(xtb.size);
+   if (!xtb.buffer) return 0;
+
+   xtb.chash = (stb_uchar**)malloc(sizeof(*xtb.chash) * stb__hashsize);
+   if (!xtb.chash) {
+      free(xtb.buffer);
+      return 0;
+   }
+
+   for (i=0; i < stb__hashsize; ++i)
+      xtb.chash[i] = NULL;
+
+   xtb.hashmask = stb__hashsize-1;
+
+   xtb.valid        = 0;
+   xtb.start        = 0;
+   xtb.window       = stb__window;
+   xtb.fsize        = stb__window;
+   xtb.pending_literals = 0;
+   xtb.total_bytes  = 0;
+
+      // stream signature
+   stb_out(0x57); stb_out(0xbc); stb_out2(0);
+
+   stb_out4(0);       // 64-bit length requires 32-bit leading 0
+
+   xtb.length_id = stb_out_backpatch_id();
+   stb_out4(0);       // we don't know the output length yet
+
+   stb_out4(stb__window);
+
+   stb__running_adler = 1;
+
+   return 1;
+}
+
+static int stb_compress_streaming_end(void)
+{
+   // flush out any remaining data
+   stb_compress_chunk(xtb.buffer, xtb.buffer+xtb.start, xtb.buffer+xtb.valid,
+                      xtb.valid-xtb.start, &xtb.pending_literals, xtb.chash, xtb.hashmask);
+
+   // write out pending literals
+   outliterals(xtb.buffer + xtb.valid - xtb.pending_literals, xtb.pending_literals);
+
+   stb_out2(0x05fa); // end opcode
+   stb_out4(stb__running_adler);
+
+   stb_out_backpatch(xtb.length_id, xtb.total_bytes);
+
+   free(xtb.buffer);
+   free(xtb.chash);
+   return 1;
+}
+
+void stb_write(char *data, int data_len)
+{
+   stb_uint i;
+
+   // @TODO: fast path for filling the buffer and doing nothing else
+   //   if (xtb.valid + data_len < xtb.size)
+
+   xtb.total_bytes += data_len;
+
+   while (data_len) {
+      // fill buffer
+      if (xtb.valid < xtb.size) {
+         int amt = xtb.size - xtb.valid;
+         if (data_len < amt) amt = data_len;
+         memcpy(xtb.buffer + xtb.valid, data, amt);
+         data_len -= amt;
+         data     += amt;
+         xtb.valid += amt;
+      }
+      if (xtb.valid < xtb.size)
+         return;
+
+      // at this point, the buffer is full
+
+      // if we can process some data, go for it; make sure
+      // we leave an 'fsize's worth of data, though
+      if (xtb.start + xtb.fsize < xtb.valid) {
+         int amount = (xtb.valid - xtb.fsize) - xtb.start;
+         int n;
+         assert(amount > 0);
+         n = stb_compress_chunk(xtb.buffer, xtb.buffer + xtb.start, xtb.buffer + xtb.valid,
+                                amount, &xtb.pending_literals, xtb.chash, xtb.hashmask);
+         xtb.start += n;
+      }
+
+      assert(xtb.start + xtb.fsize >= xtb.valid);
+      // at this point, our future size is too small, so we
+      // need to flush some history. we, in fact, flush exactly
+      // one window's worth of history
+
+      {
+         int flush = xtb.window;
+         assert(xtb.start >= flush);
+         assert(xtb.valid >= flush);
+
+         // if 'pending literals' extends back into the shift region,
+         // write them out
+         if (xtb.start - xtb.pending_literals < flush) {
+            outliterals(xtb.buffer + xtb.start - xtb.pending_literals, xtb.pending_literals);
+            xtb.pending_literals = 0;
+         }
+
+         // now shift the window
+         memmove(xtb.buffer, xtb.buffer + flush, xtb.valid - flush);
+         xtb.start -= flush;
+         xtb.valid -= flush;
+   
+         for (i=0; i <= xtb.hashmask; ++i)
+            if (xtb.chash[i] < xtb.buffer + flush)
+               xtb.chash[i] = NULL;
+            else
+               xtb.chash[i] -= flush;
+      }
+      // and now that we've made room for more data, go back to the top
+   }
+}
+
+int stb_compress_stream_start(FILE *f)
+{
+   stb__out = NULL;
+   stb__outfile = f;
+
+   if (f == NULL)
+      return 0;
+
+   if (!stb_compress_streaming_start())
+      return 0;
+
+   return 1;
+}
+
+void stb_compress_stream_end(int close)
+{
+   stb_compress_streaming_end();
+   if (close && stb__outfile) {
+      fclose(stb__outfile);
+   }
+}
+
+#endif // STB_DEFINE
+
+
+//////////////////////////////////////////////////////////////////////////////
+//
+//                         Threads
+//
+
+
+typedef void * (*stb_thread_func)(void *);
+
+// do not rely on these types, this is an implementation detail.
+// compare against STB_THREAD_NULL and ST_SEMAPHORE_NULL
+typedef void *stb_thread;
+typedef void *stb_semaphore;
+typedef void *stb_mutex;
+typedef struct stb__sync *stb_sync;
+
+#define STB_SEMAPHORE_NULL    NULL
+#define STB_THREAD_NULL       NULL
+#define STB_MUTEX_NULL        NULL
+#define STB_SYNC_NULL         NULL
+
+// get the number of processors (limited to those in the affinity mask for this process).
+STB_EXTERN int stb_processor_count(void);
+
+// stb_work functions: queue up work to be done by some worker threads
+
+// set number of threads to serve the queue; you can change this on the fly,
+// but if you decrease it, it won't decrease until things currently on the
+// queue are finished
+STB_EXTERN void          stb_work_numthreads(int n);
+// set maximum number of units in the queue; you can only set this BEFORE running any work functions
+STB_EXTERN int           stb_work_maxunits(int n);
+// enqueue some work to be done (can do this from any thread, or even from a piece of work);
+// return value of f is stored in *return_code if non-NULL
+STB_EXTERN int           stb_work(stb_thread_func f, void *d, volatile void **return_code);
+// as above, but stb_sync_reach is called on 'rel' after work is complete
+STB_EXTERN int           stb_work_reach(stb_thread_func f, void *d, volatile void **return_code, stb_sync rel);
+
+
+// necessary to call this when using volatile to order writes/reads
+STB_EXTERN void          stb_barrier(void);
+
+// support for independent queues with their own threads
+
+typedef struct stb__workqueue stb_workqueue;
+
+STB_EXTERN stb_workqueue*stb_workq_new(int numthreads, int max_units);
+STB_EXTERN stb_workqueue*stb_workq_new_flags(int numthreads, int max_units, int no_add_mutex, int no_remove_mutex);
+STB_EXTERN void          stb_workq_delete(stb_workqueue *q);
+STB_EXTERN void          stb_workq_numthreads(stb_workqueue *q, int n);
+STB_EXTERN int           stb_workq(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code);
+STB_EXTERN int           stb_workq_reach(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel);
+STB_EXTERN int           stb_workq_length(stb_workqueue *q);
+
+STB_EXTERN stb_thread    stb_create_thread (stb_thread_func f, void *d);
+STB_EXTERN stb_thread    stb_create_thread2(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel);
+STB_EXTERN void          stb_destroy_thread(stb_thread t);
+
+STB_EXTERN stb_semaphore stb_sem_new(int max_val);
+STB_EXTERN stb_semaphore stb_sem_new_extra(int max_val, int start_val);
+STB_EXTERN void          stb_sem_delete (stb_semaphore s);
+STB_EXTERN void          stb_sem_waitfor(stb_semaphore s);
+STB_EXTERN void          stb_sem_release(stb_semaphore s);
+
+STB_EXTERN stb_mutex     stb_mutex_new(void);
+STB_EXTERN void          stb_mutex_delete(stb_mutex m);
+STB_EXTERN void          stb_mutex_begin(stb_mutex m);
+STB_EXTERN void          stb_mutex_end(stb_mutex m);
+
+STB_EXTERN stb_sync      stb_sync_new(void);
+STB_EXTERN void          stb_sync_delete(stb_sync s);
+STB_EXTERN int           stb_sync_set_target(stb_sync s, int count);
+STB_EXTERN void          stb_sync_reach_and_wait(stb_sync s);    // wait for 'target' reachers
+STB_EXTERN int           stb_sync_reach(stb_sync s);
+
+typedef struct stb__threadqueue stb_threadqueue;
+#define STB_THREADQ_DYNAMIC   0
+STB_EXTERN stb_threadqueue *stb_threadq_new(int item_size, int num_items, int many_add, int many_remove);
+STB_EXTERN void             stb_threadqueue_delete(stb_threadqueue *tq);
+STB_EXTERN int              stb_threadq_get(stb_threadqueue *tq, void *output);
+STB_EXTERN void             stb_threadq_get_block(stb_threadqueue *tq, void *output);
+STB_EXTERN int              stb_threadq_add(stb_threadqueue *tq, void *input);
+// can return FALSE if STB_THREADQ_DYNAMIC and attempt to grow fails
+STB_EXTERN int              stb_threadq_add_block(stb_threadqueue *tq, void *input);
+
+#ifdef STB_DEFINE
+
+typedef struct
+{
+   stb_thread_func f;
+   void *d;
+   volatile void **return_val;
+   stb_semaphore sem;
+} stb__thread;
+
+// this is initialized along all possible paths to create threads, therefore
+// it's always initialized before any other threads are create, therefore
+// it's free of races AS LONG AS you only create threads through stb_*
+static stb_mutex stb__threadmutex, stb__workmutex;
+
+static void stb__threadmutex_init(void)
+{
+   if (stb__threadmutex == STB_SEMAPHORE_NULL) {
+      stb__threadmutex = stb_mutex_new();
+      stb__workmutex = stb_mutex_new();
+   }
+}
+
+#ifdef STB_THREAD_TEST
+volatile float stb__t1=1, stb__t2;
+
+static void stb__wait(int n)
+{
+   float z = 0;
+   int i;
+   for (i=0; i < n; ++i)
+      z += 1 / (stb__t1+i);
+   stb__t2 = z;
+}
+#else
+#define stb__wait(x)
+#endif
+
+#ifdef _WIN32
+
+// avoid including windows.h -- note that our definitions aren't
+// exactly the same (we don't define the security descriptor struct)
+// so if you want to include windows.h, make sure you do it first.
+#include <process.h>
+
+#ifndef _WINDOWS_  // check windows.h guard
+#define STB__IMPORT   STB_EXTERN __declspec(dllimport)
+#define STB__DW       unsigned long
+
+STB__IMPORT int     __stdcall TerminateThread(void *, STB__DW);
+STB__IMPORT void *  __stdcall CreateSemaphoreA(void *sec, long,long,char*);
+STB__IMPORT int     __stdcall CloseHandle(void *);
+STB__IMPORT STB__DW __stdcall WaitForSingleObject(void *, STB__DW);
+STB__IMPORT int     __stdcall ReleaseSemaphore(void *, long, long *);
+STB__IMPORT void    __stdcall Sleep(STB__DW);
+#endif
+
+// necessary to call this when using volatile to order writes/reads
+void stb_barrier(void)
+{
+   #ifdef MemoryBarrier
+   MemoryBarrier();
+   #else
+   long temp;
+   __asm xchg temp,eax;
+   #endif
+}
+
+static void stb__thread_run(void *t)
+{
+   void *res;
+   stb__thread info = * (stb__thread *) t;
+   free(t);
+   res = info.f(info.d);
+   if (info.return_val)
+      *info.return_val = res;
+   if (info.sem != STB_SEMAPHORE_NULL)
+      stb_sem_release(info.sem);
+}
+
+static stb_thread stb_create_thread_raw(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
+{
+#ifdef _MT
+#if defined(STB_FASTMALLOC) && !defined(STB_FASTMALLOC_ITS_OKAY_I_ONLY_MALLOC_IN_ONE_THREAD)
+   stb_fatal("Error! Cannot use STB_FASTMALLOC with threads.\n");
+   return STB_THREAD_NULL;
+#else
+   unsigned long id;
+   stb__thread *data = (stb__thread *) malloc(sizeof(*data));
+   if (!data) return NULL;
+   stb__threadmutex_init();
+   data->f = f;
+   data->d = d;
+   data->return_val = return_code;
+   data->sem = rel;
+   id = _beginthread(stb__thread_run, 0, data);
+   if (id == -1) return NULL;
+   return (void *) id;
+#endif
+#else
+   stb_fatal("Must compile mult-threaded to use stb_thread/stb_work.");
+   return NULL;
+#endif
+}
+
+// trivial win32 wrappers
+void          stb_destroy_thread(stb_thread t)   { TerminateThread(t,0); }
+stb_semaphore stb_sem_new(int maxv)                {return CreateSemaphoreA(NULL,0,maxv,NULL); }
+stb_semaphore stb_sem_new_extra(int maxv,int start){return CreateSemaphoreA(NULL,start,maxv,NULL); }
+void          stb_sem_delete(stb_semaphore s)    { if (s != NULL) CloseHandle(s); }
+void          stb_sem_waitfor(stb_semaphore s)   { WaitForSingleObject(s, 0xffffffff); } // INFINITE
+void          stb_sem_release(stb_semaphore s)   { ReleaseSemaphore(s,1,NULL); }
+static void   stb__thread_sleep(int ms)          { Sleep(ms); }
+
+#ifndef _WINDOWS_
+STB__IMPORT int __stdcall GetProcessAffinityMask(void *, STB__DW *, STB__DW *);
+STB__IMPORT void * __stdcall GetCurrentProcess(void);
+#endif
+
+int stb_processor_count(void)
+{
+   unsigned long proc,sys;
+   GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys);
+   return stb_bitcount(proc);
+}
+
+#ifdef _WINDOWS_
+#define STB_MUTEX_NATIVE
+DWORD foob;
+void *stb_mutex_new(void)
+{
+   CRITICAL_SECTION *p = (CRITICAL_SECTION *) malloc(sizeof(*p));
+   if (p)
+#if _WIN32_WINNT >= 0x0500
+      InitializeCriticalSectionAndSpinCount(p, 500);
+#else
+      InitializeCriticalSection(p);
+#endif
+   return p;
+}
+
+void stb_mutex_delete(void *p)
+{
+   if (p) {
+      DeleteCriticalSection((CRITICAL_SECTION *) p);
+      free(p);
+   }
+}
+
+void stb_mutex_begin(void *p)
+{
+   stb__wait(500);
+   if (p)
+      EnterCriticalSection((CRITICAL_SECTION *) p);
+}
+
+void stb_mutex_end(void *p)
+{
+   if (p)
+      LeaveCriticalSection((CRITICAL_SECTION *) p);
+   stb__wait(500);
+}
+#endif // _WINDOWS_
+
+#if 0
+// for future reference, 
+// InterlockedCompareExchange for x86:
+ int cas64_mp(void * dest, void * xcmp, void * xxchg) {
+        __asm
+        {
+                mov             esi, [xxchg]            ; exchange
+                mov             ebx, [esi + 0]
+                mov             ecx, [esi + 4]
+
+                mov             esi, [xcmp]                     ; comparand
+                mov             eax, [esi + 0]
+                mov             edx, [esi + 4]
+
+                mov             edi, [dest]                     ; destination
+                lock cmpxchg8b  [edi]
+                jz              yyyy;
+
+                mov             [esi + 0], eax;
+                mov             [esi + 4], edx;
+
+yyyy:
+                xor             eax, eax;
+                setz    al;
+        };
+
+inline unsigned __int64 _InterlockedCompareExchange64(volatile unsigned __int64 *dest
+                           ,unsigned __int64 exchange
+                           ,unsigned __int64 comperand)
+{
+    //value returned in eax::edx
+    __asm {
+        lea esi,comperand;
+        lea edi,exchange;
+
+        mov eax,[esi];
+        mov edx,4[esi];
+        mov ebx,[edi];
+        mov ecx,4[edi];
+        mov esi,dest;
+        lock CMPXCHG8B [esi];
+    } 
+#endif // #if 0
+
+#endif // _WIN32
+
+stb_thread stb_create_thread2(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
+{
+   return stb_create_thread_raw(f,d,return_code,rel);
+}
+
+stb_thread stb_create_thread(stb_thread_func f, void *d)
+{
+   return stb_create_thread2(f,d,NULL,STB_SEMAPHORE_NULL);
+}
+
+// mutex implemented by wrapping semaphore
+#ifndef STB_MUTEX_NATIVE
+stb_mutex stb_mutex_new(void)            { return stb_sem_new_extra(1,1); }
+void      stb_mutex_delete(stb_mutex m)  { stb_sem_delete (m);      }
+void      stb_mutex_begin(stb_mutex m)   { stb__wait(500); if (m) stb_sem_waitfor(m); }
+void      stb_mutex_end(stb_mutex m)     { if (m) stb_sem_release(m); stb__wait(500); }
+#endif
+
+// thread merge operation
+struct stb__sync
+{
+   int target;  // target number of threads to hit it
+   int sofar;   // total threads that hit it
+   int waiting; // total threads waiting
+
+   stb_mutex start;   // mutex to prevent starting again before finishing previous
+   stb_mutex mutex;   // mutex while tweaking state
+   stb_semaphore release; // semaphore wake up waiting threads
+      // we have to wake them up one at a time, rather than using a single release
+      // call, because win32 semaphores don't let you dynamically change the max count!
+};
+
+stb_sync stb_sync_new(void)
+{
+   stb_sync s = (stb_sync) malloc(sizeof(*s));
+   if (!s) return s;
+
+   s->target = s->sofar = s->waiting = 0;
+   s->mutex   = stb_mutex_new();
+   s->start   = stb_mutex_new();
+   s->release = stb_sem_new(1);
+   if (s->mutex == STB_MUTEX_NULL || s->release == STB_SEMAPHORE_NULL || s->start == STB_MUTEX_NULL) {
+      stb_mutex_delete(s->mutex);
+      stb_mutex_delete(s->mutex);
+      stb_sem_delete(s->release);
+      free(s);
+      return NULL;
+   }
+   return s;
+}
+
+void stb_sync_delete(stb_sync s)
+{
+   if (s->waiting) {
+      // it's bad to delete while there are threads waiting!
+      // shall we wait for them to reach, or just bail? just bail
+      assert(0);
+   }
+   stb_mutex_delete(s->mutex);
+   stb_mutex_delete(s->release);
+   free(s);
+}
+
+int stb_sync_set_target(stb_sync s, int count)
+{
+   // don't allow setting a target until the last one is fully released;
+   // note that this can lead to inefficient pipelining, and maybe we'd
+   // be better off ping-ponging between two internal syncs?
+   // I tried seeing how often this happened using TryEnterCriticalSection
+   // and could _never_ get it to happen in imv(stb), even with more threads
+   // than processors. So who knows!
+   stb_mutex_begin(s->start);
+
+   // this mutex is pointless, since it's not valid for threads
+   // to call reach() before anyone calls set_target() anyway
+   stb_mutex_begin(s->mutex);
+
+   assert(s->target == 0); // enforced by start mutex
+   s->target  = count;
+   s->sofar   = 0;
+   s->waiting = 0;
+   stb_mutex_end(s->mutex);
+   return TRUE;
+}
+
+void stb__sync_release(stb_sync s)
+{
+   if (s->waiting)
+      stb_sem_release(s->release);
+   else {
+      s->target = 0;
+      stb_mutex_end(s->start);
+   }
+}
+
+int stb_sync_reach(stb_sync s)
+{
+   int n;
+   stb_mutex_begin(s->mutex);
+   assert(s->sofar < s->target);
+   n = ++s->sofar; // record this value to avoid possible race if we did 'return s->sofar';
+   if (s->sofar == s->target)
+      stb__sync_release(s);
+   stb_mutex_end(s->mutex);
+   return n;
+}
+
+void stb_sync_reach_and_wait(stb_sync s)
+{
+   stb_mutex_begin(s->mutex);
+   assert(s->sofar < s->target);
+   ++s->sofar;
+   if (s->sofar == s->target) {
+      stb__sync_release(s);
+      stb_mutex_end(s->mutex);
+   } else {
+      ++s->waiting; // we're waiting, so one more waiter
+      stb_mutex_end(s->mutex); // release the mutex to other threads
+
+      stb_sem_waitfor(s->release); // wait for merge completion
+
+      stb_mutex_begin(s->mutex); // on merge completion, grab the mutex
+      --s->waiting; // we're done waiting
+      stb__sync_release(s);
+      stb_mutex_end(s->mutex); // and now we're done
+      // this ends the same as the first case, but it's a lot
+      // clearer to understand without sharing the code
+   }
+}
+
+struct stb__threadqueue
+{
+   stb_mutex add, remove;
+   stb_semaphore nonempty, nonfull;
+   int head_blockers;  // number of threads blocking--used to know whether to release(avail)
+   int tail_blockers;
+   int head, tail, array_size, growable;
+   int item_size;
+   char *data;
+};
+
+static int stb__tq_wrap(volatile stb_threadqueue *z, int p)
+{
+   if (p == z->array_size)
+      return p - z->array_size;
+   else
+      return p;
+}
+
+int stb__threadq_get_raw(stb_threadqueue *tq2, void *output, int block)
+{
+   volatile stb_threadqueue *tq = (volatile stb_threadqueue *) tq2;
+   if (tq->head == tq->tail && !block) return 0;
+
+   stb_mutex_begin(tq->remove);
+
+   while (tq->head == tq->tail) {
+      if (!block) {
+         stb_mutex_end(tq->remove);
+         return 0;
+      }
+      ++tq->head_blockers;
+      stb_mutex_end(tq->remove);
+
+      stb_sem_waitfor(tq->nonempty);
+
+      stb_mutex_begin(tq->remove);
+      --tq->head_blockers;
+   }
+
+   memcpy(output, tq->data + tq->head*tq->item_size, tq->item_size);
+   stb_barrier();
+   tq->head = stb__tq_wrap(tq, tq->head+1);
+
+   stb_sem_release(tq->nonfull);
+   if (tq->head_blockers) // can't check if actually non-empty due to race?
+      stb_sem_release(tq->nonempty); // if there are other blockers, wake one
+
+   stb_mutex_end(tq->remove);
+   return TRUE;
+}
+
+int stb__threadq_grow(volatile stb_threadqueue *tq)
+{
+   int n;
+   char *p;
+   assert(tq->remove != STB_MUTEX_NULL); // must have this to allow growth!
+   stb_mutex_begin(tq->remove);
+
+   n = tq->array_size * 2;
+   p = (char *) realloc(tq->data, n * tq->item_size);
+   if (p == NULL) {
+      stb_mutex_end(tq->remove);
+      stb_mutex_end(tq->add);
+      return FALSE;
+   }
+   if (tq->tail < tq->head) {
+      memcpy(p + tq->array_size * tq->item_size, p, tq->tail * tq->item_size);
+      tq->tail += tq->array_size;
+   }
+   tq->data = p;
+   tq->array_size = n;
+
+   stb_mutex_end(tq->remove);
+   return TRUE;
+}
+
+int stb__threadq_add_raw(stb_threadqueue *tq2, void *input, int block)
+{
+   int tail,pos;
+   volatile stb_threadqueue *tq = (volatile stb_threadqueue *) tq2;
+   stb_mutex_begin(tq->add);
+   for(;;) {
+      pos = tq->tail;
+      tail = stb__tq_wrap(tq, pos+1);
+      if (tail != tq->head) break;
+
+      // full
+      if (tq->growable) {
+         if (!stb__threadq_grow(tq)) {
+            stb_mutex_end(tq->add);
+            return FALSE; // out of memory
+         }
+      } else if (!block) {
+         stb_mutex_end(tq->add);
+         return FALSE;
+      } else {
+         ++tq->tail_blockers;
+         stb_mutex_end(tq->add);
+
+         stb_sem_waitfor(tq->nonfull);
+
+         stb_mutex_begin(tq->add);
+         --tq->tail_blockers;
+      }
+   }
+   memcpy(tq->data + tq->item_size * pos, input, tq->item_size);
+   stb_barrier();
+   tq->tail = tail;
+   stb_sem_release(tq->nonempty);
+   if (tq->tail_blockers) // can't check if actually non-full due to race?
+      stb_sem_release(tq->nonfull);
+   stb_mutex_end(tq->add);
+   return TRUE;
+}
+
+int stb_threadq_length(stb_threadqueue *tq2)
+{
+   int a,b,n;
+   volatile stb_threadqueue *tq = (volatile stb_threadqueue *) tq2;
+   stb_mutex_begin(tq->add);
+   a = tq->head;
+   b = tq->tail;
+   n = tq->array_size;
+   stb_mutex_end(tq->add);
+   if (a > b) b += n;
+   return b-a;
+}
+
+int stb_threadq_get(stb_threadqueue *tq, void *output)
+{
+   return stb__threadq_get_raw(tq, output, FALSE);
+}
+
+void stb_threadq_get_block(stb_threadqueue *tq, void *output)
+{
+   stb__threadq_get_raw(tq, output, TRUE);
+}
+
+int stb_threadq_add(stb_threadqueue *tq, void *input)
+{
+   return stb__threadq_add_raw(tq, input, FALSE);
+}
+
+int stb_threadq_add_block(stb_threadqueue *tq, void *input)
+{
+   return stb__threadq_add_raw(tq, input, TRUE);
+}
+
+void stb_threadq_delete(stb_threadqueue *tq)
+{
+   if (tq) {
+      free(tq->data);
+      stb_mutex_delete(tq->add);
+      stb_mutex_delete(tq->remove);
+      stb_sem_delete(tq->nonempty);
+      stb_sem_delete(tq->nonfull);
+      free(tq);
+   }
+}
+
+#define STB_THREADQUEUE_DYNAMIC   0
+stb_threadqueue *stb_threadq_new(int item_size, int num_items, int many_add, int many_remove)
+{
+   int error=0;
+   stb_threadqueue *tq = (stb_threadqueue *) malloc(sizeof(*tq));
+   if (tq == NULL) return NULL;
+
+   if (num_items == STB_THREADQUEUE_DYNAMIC) {
+      tq->growable = TRUE;
+      num_items = 32;
+   } else
+      tq->growable = FALSE;
+
+   tq->item_size = item_size;
+   tq->array_size = num_items+1;
+
+   tq->add = tq->remove = STB_MUTEX_NULL;
+   tq->nonempty = tq->nonfull = STB_SEMAPHORE_NULL;
+   tq->data = NULL;
+   if (many_add)
+      { tq->add    = stb_mutex_new(); if (tq->add    == STB_MUTEX_NULL) goto error; }
+   if (many_remove || tq->growable)
+      { tq->remove = stb_mutex_new(); if (tq->remove == STB_MUTEX_NULL) goto error; }
+   tq->nonempty = stb_sem_new(1); if (tq->nonempty == STB_SEMAPHORE_NULL) goto error;
+   tq->nonfull  = stb_sem_new(1); if (tq->nonfull  == STB_SEMAPHORE_NULL) goto error;
+   tq->data = (char *) malloc(tq->item_size * tq->array_size);
+   if (tq->data == NULL) goto error;
+
+   tq->head = tq->tail = 0;
+   tq->head_blockers = tq->tail_blockers = 0;
+
+   return tq;
+
+error:
+   stb_threadq_delete(tq);
+   return NULL;
+}
+
+typedef struct
+{
+   stb_thread_func f;
+   void *d;
+   volatile void **retval;
+   stb_sync sync;
+} stb__workinfo;
+
+static volatile stb__workinfo *stb__work;
+
+struct stb__workqueue
+{
+   int numthreads;
+   stb_threadqueue *tq;
+};
+
+static void *stb__thread_workloop(void *p)
+{
+   volatile stb_workqueue *q = (volatile stb_workqueue *) p;
+   for(;;) {
+      void *z;
+      stb__workinfo w;
+      stb_threadq_get_block(q->tq, &w);
+      if (w.f == NULL) // null work is a signal to end the thread
+         return NULL;
+      z = w.f(w.d);
+      if (w.retval) { stb_barrier(); *w.retval = z; }
+      if (w.sync != STB_SYNC_NULL) stb_sync_reach(w.sync);
+   }
+}
+
+static stb_workqueue *stb__work_global;
+
+stb_workqueue *stb_workq_new(int num_threads, int max_units)
+{
+   return stb_workq_new_flags(num_threads, max_units, 0,0);
+}
+
+stb_workqueue *stb_workq_new_flags(int numthreads, int max_units, int no_add_mutex, int no_remove_mutex)
+{
+   stb_workqueue *q = (stb_workqueue *) malloc(sizeof(*q));
+   if (q == NULL) return NULL;
+   q->tq = stb_threadq_new(sizeof(stb__workinfo), max_units, !no_add_mutex, !no_remove_mutex);
+   if (q->tq == NULL) { free(q); return NULL; }
+   q->numthreads = 0;
+   stb_workq_numthreads(q, numthreads);
+   return q;
+}
+
+void stb_workq_delete(stb_workqueue *q)
+{
+   while (stb_workq_length(q) != 0)
+      stb__thread_sleep(1);
+   stb_threadq_delete(q->tq);
+   free(q);
+}
+
+static int stb__work_maxitems = STB_THREADQUEUE_DYNAMIC;
+
+static void stb_work_init(int num_threads)
+{
+   if (stb__work_global == NULL) {
+      stb__threadmutex_init();
+      stb_mutex_begin(stb__workmutex);
+      stb_barrier();
+      if ((stb_workqueue * volatile) stb__work_global == NULL)
+         stb__work_global = stb_workq_new(num_threads, stb__work_maxitems);
+      stb_mutex_end(stb__workmutex);
+   }
+}
+
+static int stb__work_raw(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
+{
+   stb__workinfo w;
+   if (q == NULL) {
+      stb_work_init(1);
+      q = stb__work_global;
+   }
+   w.f = f;
+   w.d = d;
+   w.retval = return_code;
+   w.sync = rel;
+   return stb_threadq_add(q->tq, &w);
+}
+
+int stb_workq_length(stb_workqueue *q)
+{
+   return stb_threadq_length(q->tq);
+}
+
+int stb_workq(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code)
+{
+   if (f == NULL) return 0;
+   return stb_workq_reach(q, f, d, return_code, NULL);
+}
+
+int stb_workq_reach(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
+{
+   if (f == NULL) return 0;
+   return stb__work_raw(q, f, d, return_code, rel);
+}
+
+static void stb__workq_numthreads(stb_workqueue *q, int n)
+{
+   while (q->numthreads < n) {
+      stb_create_thread(stb__thread_workloop, q);
+      ++q->numthreads;
+   }
+   while (q->numthreads > n) {
+      stb__work_raw(q, NULL, NULL, NULL, NULL);
+      --q->numthreads;
+   }
+}
+
+void stb_workq_numthreads(stb_workqueue *q, int n)
+{
+   stb_mutex_begin(stb__threadmutex);
+   stb__workq_numthreads(q,n);
+   stb_mutex_end(stb__threadmutex);
+}
+
+int stb_work_maxunits(int n)
+{
+   if (stb__work_global == NULL) {
+      stb__work_maxitems = n;
+      stb_work_init(1);
+   }
+   return stb__work_maxitems;
+}
+
+int stb_work(stb_thread_func f, void *d, volatile void **return_code)
+{
+   return stb_workq(stb__work_global, f,d,return_code);
+}
+
+int stb_work_reach(stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
+{
+   return stb_workq_reach(stb__work_global, f,d,return_code,rel);
+}
+
+void stb_work_numthreads(int n)
+{
+   if (stb__work_global == NULL)
+      stb_work_init(n);
+   else
+      stb_workq_numthreads(stb__work_global, n);
+}
+#endif // STB_DEFINE
+
+//////////////////////////////////////////////////////////////////////////////
+//
+// Background disk I/O
+//
+//
+
+#define STB_BGIO_READ_ALL   (-1)
+STB_EXTERN int stb_bgio_read    (char *filename, int offset, int len, stb_uchar **result, int *olen);
+STB_EXTERN int stb_bgio_readf   (FILE *f       , int offset, int len, stb_uchar **result, int *olen);
+STB_EXTERN int stb_bgio_read_to (char *filename, int offset, int len, stb_uchar  *buffer, int *olen);
+STB_EXTERN int stb_bgio_readf_to(FILE *f       , int offset, int len, stb_uchar  *buffer, int *olen);
+
+#ifdef STB_DEFINE
+
+static stb_workqueue *stb__diskio;
+static stb_mutex stb__diskio_mutex;
+
+typedef struct
+{
+   char *filename;
+   FILE *f;
+   int offset;
+   int len;
+
+   stb_uchar *output;
+   stb_uchar **result;
+   int *len_output;
+   int *flag;
+} stb__disk_command;
+
+#define STB__MAX_DISK_COMMAND 100
+static stb__disk_command stb__dc_queue[STB__MAX_DISK_COMMAND];
+static int stb__dc_offset;
+
+void stb__io_init(void)
+{
+   if (!stb__diskio) {
+      stb__threadmutex_init();
+      stb_mutex_begin(stb__threadmutex);
+      stb_barrier();
+      if ((stb_thread * volatile) stb__diskio == NULL) {
+         stb__diskio_mutex = stb_mutex_new();
+         stb__diskio = stb_workq_new_flags(1,STB__MAX_DISK_COMMAND,TRUE,TRUE); // no remove mutex
+      }
+      stb_mutex_end(stb__threadmutex);
+   }
+}
+
+static void * stb__io_error(stb__disk_command *dc)
+{
+   if (dc->len_output) *dc->len_output = 0;
+   if (dc->result) *dc->result = NULL;
+   if (dc->flag) *dc->flag = -1;
+   return NULL;
+}
+
+static void * stb__io_task(void *p)
+{
+   stb__disk_command *dc = (stb__disk_command *) p;
+   int len;
+   FILE *f;
+   stb_uchar *buf;
+
+   if (dc->f)
+      f = dc->f;
+   else {
+      f = fopen(dc->filename, "rb");
+      free(dc->filename);
+      if (!f)
+         return stb__io_error(dc);
+   }
+
+   len = dc->len;
+   if (len < 0) {
+      fseek(f, 0, SEEK_END);
+      len = ftell(f) - dc->offset;
+   }
+
+   if (!fseek(f, dc->offset, SEEK_SET))
+      return stb__io_error(dc);
+
+   if (dc->output)
+      buf = dc->output;
+   else {
+      buf = (stb_uchar *) malloc(len);
+      if (buf == NULL)
+         return stb__io_error(dc);
+   }
+
+   len = fread(buf, 1, len, f);
+   if (dc->len_output) *dc->len_output = len;
+   if (dc->result) *dc->result = buf;
+   if (dc->flag) *dc->flag = 1;
+
+   return NULL;
+}
+
+int stb__io_add(char *fname, FILE *f, int off, int len, stb_uchar *out, stb_uchar **result, int *olen, int *flag)
+{
+   int res;
+   stb__io_init();
+   // do memory allocation outside of mutex
+   if (fname) fname = strdup(fname);
+   stb_mutex_begin(stb__diskio_mutex);
+   {
+      stb__disk_command *dc = &stb__dc_queue[stb__dc_offset];
+      dc->filename = fname;
+      dc->f = f;
+      dc->offset = off;
+      dc->len = len;
+      dc->output = out;
+      dc->result = result;
+      dc->len_output = olen;
+      dc->flag = flag;
+      res = stb_workq(stb__diskio, stb__io_task, dc, NULL);
+      if (res)
+         stb__dc_offset = (stb__dc_offset + 1 == STB__MAX_DISK_COMMAND ? 0 : stb__dc_offset+1);
+   }
+   stb_mutex_end(stb__diskio_mutex);
+   return res;
+}
+
+int stb_bgio_read(char *filename, int offset, int len, stb_uchar **result, int *olen)
+{
+   return stb__io_add(filename,NULL,offset,len,NULL,result,olen,NULL);
+}
+
+int stb_bgio_readf(FILE *f, int offset, int len, stb_uchar **result, int *olen)
+{
+   return stb__io_add(NULL,f,offset,len,NULL,result,olen,NULL);
+}
+
+int stb_bgio_read_to(char *filename, int offset, int len, stb_uchar *buffer, int *olen)
+{
+   return stb__io_add(filename,NULL,offset,len,buffer,NULL,olen,NULL);
+}
+
+int stb_bgio_readf_to(FILE *f, int offset, int len, stb_uchar *buffer, int *olen)
+{
+   return stb__io_add(NULL,f,offset,len,buffer,NULL,olen,NULL);
+}
+#endif
+
+//////////////////////////////////////////////////////////////////////////////
+//
+//                         Fast malloc implementation
+//
+//   This is a clone of TCMalloc, but without the thread support.
+//      1. large objects are allocated directly, page-aligned
+//      2. small objects are allocated in homogeonous heaps, 0 overhead
+//
+//   We keep an allocation table for pages a la TCMalloc. This would
+//   require 4MB for the entire address space, but we only allocate
+//   the parts that are in use. The overhead from using homogenous heaps
+//   everywhere is 3MB. (That is, if you allocate 1 object of each size,
+//   you'll use 3MB.)
+
+#if defined(STB_DEFINE) && (defined(_WIN32) || defined(STB_FASTMALLOC))
+
+#ifdef _WIN32
+   #ifndef _WINDOWS_
+   STB__IMPORT void * __stdcall VirtualAlloc(void *p, unsigned long size, unsigned long type, unsigned long protect);
+   STB__IMPORT int   __stdcall VirtualFree(void *p, unsigned long size, unsigned long freetype);
+   #endif
+   #define stb__alloc_pages_raw(x)     (stb_uint32) VirtualAlloc(NULL, (x), 0x3000, 0x04)
+   #define stb__dealloc_pages_raw(p)   VirtualFree((void *) p, 0, 0x8000)
+#else
+   #error "Platform not currently supported"
+#endif
+
+typedef struct stb__span
+{
+   int                start, len;
+   struct stb__span  *next, *prev;
+   void              *first_free;
+   unsigned short     list; // 1..256 free; 257..511 sizeclass; 0=large block
+   short              allocations; // # outstanding allocations for sizeclass
+} stb__span;  // 24
+
+static stb__span **stb__span_for_page;
+static int stb__firstpage, stb__lastpage;
+static void stb__update_page_range(int first, int last)
+{
+   stb__span **sfp;
+   int i, f,l;
+   if (first >= stb__firstpage && last <= stb__lastpage) return;
+   if (stb__span_for_page == NULL) {
+      f = first;
+      l = f+stb_max(last-f, 16384);
+      l = stb_min(l, 1<<20);
+   } else if (last > stb__lastpage) {
+      f = stb__firstpage;
+      l = f + (stb__lastpage - f) * 2;
+      l = stb_clamp(last, l,1<<20);
+   } else {
+      l = stb__lastpage;
+      f = l - (l - stb__firstpage) * 2;
+      f = stb_clamp(f, 0,first);
+   }
+   sfp = (stb__span **) stb__alloc_pages_raw(sizeof(void *) * (l-f));
+   for (i=f; i < stb__firstpage; ++i) sfp[i - f] = NULL;
+   for (   ; i < stb__lastpage ; ++i) sfp[i - f] = stb__span_for_page[i - stb__firstpage];
+   for (   ; i < l             ; ++i) sfp[i - f] = NULL;
+   if (stb__span_for_page) stb__dealloc_pages_raw(stb__span_for_page);
+   stb__firstpage = f;
+   stb__lastpage  = l;
+   stb__span_for_page = sfp;
+}
+
+static stb__span *stb__span_free=NULL;
+static stb__span *stb__span_first, *stb__span_end;
+static stb__span *stb__span_alloc(void)
+{
+   stb__span *s = stb__span_free;
+   if (s)
+      stb__span_free = s->next;
+   else {
+      if (!stb__span_first) {
+         stb__span_first = (stb__span *) stb__alloc_pages_raw(65536);
+         if (stb__span_first == NULL) return NULL;
+         stb__span_end = stb__span_first + (65536 / sizeof(stb__span));
+      }
+      s = stb__span_first++;
+      if (stb__span_first == stb__span_end) stb__span_first = NULL;
+   }
+   return s;
+}
+
+static stb__span *stb__spanlist[512];
+
+static void stb__spanlist_unlink(stb__span *s)
+{
+   if (s->prev)
+      s->prev->next = s->next;
+   else {
+      int n = s->list;
+      assert(stb__spanlist[n] == s);
+      stb__spanlist[n] = s->next;
+   }
+   if (s->next)
+      s->next->prev = s->prev;
+   s->next = s->prev = NULL;
+   s->list = 0;
+}
+
+static void stb__spanlist_add(int n, stb__span *s)
+{
+   s->list = n;
+   s->next = stb__spanlist[n];
+   s->prev = NULL;
+   stb__spanlist[n] = s;
+   if (s->next) s->next->prev = s;
+}
+
+#define stb__page_shift       12
+#define stb__page_size        (1 << stb__page_shift)
+#define stb__page_number(x)   ((x) >> stb__page_shift)
+#define stb__page_address(x)  ((x) << stb__page_shift)
+
+static void stb__set_span_for_page(stb__span *s)
+{
+   int i;
+   for (i=0; i < s->len; ++i)
+      stb__span_for_page[s->start + i - stb__firstpage] = s;
+}
+
+static stb__span *stb__coalesce(stb__span *a, stb__span *b)
+{
+   assert(a->start + a->len == b->start);
+   if (a->list) stb__spanlist_unlink(a);
+   if (b->list) stb__spanlist_unlink(b);
+   a->len += b->len;
+   b->len = 0;
+   b->next = stb__span_free;
+   stb__span_free = b;
+   stb__set_span_for_page(a);
+   return a;
+}
+
+static void stb__free_span(stb__span *s)
+{
+   stb__span *n = NULL;
+   if (s->start > stb__firstpage) {
+      n = stb__span_for_page[s->start-1 - stb__firstpage];
+      if (n && n->allocations == -2 && n->start + n->len == s->start) s = stb__coalesce(n,s);
+   }
+   if (s->start + s->len < stb__lastpage) {
+      n = stb__span_for_page[s->start + s->len - stb__firstpage];
+      if (n && n->allocations == -2 && s->start + s->len == n->start) s = stb__coalesce(s,n);
+   }
+   s->allocations = -2;
+   stb__spanlist_add(s->len > 256 ? 256 : s->len, s);
+}
+
+static stb__span *stb__alloc_pages(int num)
+{
+   stb__span *s = stb__span_alloc();
+   int p;
+   if (!s) return NULL;
+   p = stb__alloc_pages_raw(num << stb__page_shift);
+   if (p == 0) { s->next = stb__span_free; stb__span_free = s; return 0; }
+   assert(stb__page_address(stb__page_number(p)) == p);
+   p = stb__page_number(p);
+   stb__update_page_range(p, p+num);
+   s->start = p;
+   s->len   = num;
+   s->next  = NULL;
+   s->prev  = NULL;
+   stb__set_span_for_page(s);
+   return s;
+}
+
+static stb__span *stb__alloc_span(int pagecount)
+{
+   int i;
+   stb__span *p = NULL;
+   for(i=pagecount; i < 256; ++i)
+      if (stb__spanlist[i]) {
+         p = stb__spanlist[i];
+         break;
+      }
+   if (!p) {
+      p = stb__spanlist[256];
+      while (p && p->len < pagecount)
+         p = p->next;
+   }
+   if (!p) {
+      p = stb__alloc_pages(pagecount < 16 ? 16 : pagecount);
+      if (p == NULL) return 0;
+   } else
+      stb__spanlist_unlink(p);
+      
+   if (p->len > pagecount) {
+      stb__span *q = stb__span_alloc();
+      if (q) {
+         q->start = p->start + pagecount;
+         q->len   = p->len   - pagecount;
+         p->len   = pagecount;
+         for (i=0; i < q->len; ++i)
+            stb__span_for_page[q->start+i - stb__firstpage] = q;
+         stb__spanlist_add(q->len > 256 ? 256 : q->len, q);
+      }
+   }
+   return p;
+}
+
+#define STB__MAX_SMALL_SIZE     32768
+#define STB__MAX_SIZE_CLASSES   256
+
+static unsigned char stb__class_base[32];
+static unsigned char stb__class_shift[32];
+static unsigned char stb__pages_for_class[STB__MAX_SIZE_CLASSES];
+static           int stb__size_for_class[STB__MAX_SIZE_CLASSES];
+
+stb__span *stb__get_nonempty_sizeclass(int c)
+{
+   int s = c + 256, i, size, tsize; // remap to span-list index
+   char *z;
+   void *q;
+   stb__span *p = stb__spanlist[s];
+   if (p) {
+      if (p->first_free) return p; // fast path: it's in the first one in list
+      for (p=p->next; p; p=p->next)
+         if (p->first_free) {
+            // move to front for future queries
+            stb__spanlist_unlink(p);
+            stb__spanlist_add(s, p);
+            return p;
+         }
+   }
+   // no non-empty ones, so allocate a new one
+   p = stb__alloc_span(stb__pages_for_class[c]);
+   if (!p) return NULL;
+   // create the free list up front
+   size = stb__size_for_class[c];
+   tsize = stb__pages_for_class[c] << stb__page_shift;
+   i = 0;
+   z = (char *) stb__page_address(p->start);
+   q = NULL;
+   while (i + size <= tsize) {
+      * (void **) z = q; q = z;
+      z += size;
+      i += size;
+   }
+   p->first_free = q;
+   p->allocations = 0;
+   stb__spanlist_add(s,p);
+   return p;
+}
+
+static int stb__sizeclass(size_t sz)
+{
+   int z = stb_log2_floor(sz); // -1 below to group e.g. 13,14,15,16 correctly
+   return stb__class_base[z] + ((sz-1) >> stb__class_shift[z]);
+}
+
+static void stb__init_sizeclass(void)
+{
+   int i, size, overhead;
+   int align_shift = 2;  // allow 4-byte and 12-byte blocks as well, vs. TCMalloc
+   int next_class = 1;
+   int last_log = 0;
+
+   for (i = 0; i < align_shift; i++) {
+      stb__class_base [i] = next_class;
+      stb__class_shift[i] = align_shift;
+   }
+
+   for (size = 1 << align_shift; size <= STB__MAX_SMALL_SIZE; size += 1 << align_shift) {
+      i = stb_log2_floor(size);
+      if (i > last_log) {
+         if (size == 16) ++align_shift; // switch from 4-byte to 8-byte alignment
+         else if (size >= 128 && align_shift < 8) ++align_shift;
+         stb__class_base[i]  = next_class - ((size-1) >> align_shift);
+         stb__class_shift[i] = align_shift;
+         last_log = i;
+      }
+      stb__size_for_class[next_class++] = size;
+   }
+
+   for (i=1; i <= STB__MAX_SMALL_SIZE; ++i)
+      assert(i <= stb__size_for_class[stb__sizeclass(i)]);
+
+   overhead = 0;
+   for (i = 1; i < next_class; i++) {
+      int s = stb__size_for_class[i];
+      size = stb__page_size;
+      while (size % s > size >> 3)
+         size += stb__page_size;
+      stb__pages_for_class[i] = (unsigned char) (size >> stb__page_shift);
+      overhead += size;
+   }
+   assert(overhead < (4 << 20)); // make sure it's under 4MB of overhead
+}
+
+#ifdef STB_DEBUG
+#define stb__smemset(a,b,c)  memset((void *) a, b, c)
+#elif defined(STB_FASTMALLOC_INIT)
+#define stb__smemset(a,b,c)  memset((void *) a, b, c)
+#else
+#define stb__smemset(a,b,c)
+#endif
+void *stb_smalloc(size_t sz)
+{
+   stb__span *s;
+   if (sz == 0) return NULL;
+   if (stb__size_for_class[1] == 0) stb__init_sizeclass();
+   if (sz > STB__MAX_SMALL_SIZE) {
+      s = stb__alloc_span((sz + stb__page_size - 1) >> stb__page_shift);
+      if (s == NULL) return NULL;
+      s->list = 0;
+      s->next = s->prev = NULL;
+      s->allocations = -32767;
+      stb__smemset(stb__page_address(s->start), 0xcd, (sz+3)&~3);
+      return (void *) stb__page_address(s->start);
+   } else {
+      void *p;
+      int c = stb__sizeclass(sz);
+      s = stb__spanlist[256+c];
+      if (!s || !s->first_free)
+         s = stb__get_nonempty_sizeclass(c);
+      if (s == NULL) return NULL;
+      p = s->first_free;
+      s->first_free = * (void **) p;
+      ++s->allocations;
+      stb__smemset(p,0xcd, sz);
+      return p;
+   }
+}
+
+int stb_ssize(void *p)
+{
+   stb__span *s;
+   if (p == NULL) return 0;
+   s = stb__span_for_page[stb__page_number((stb_uint) p) - stb__firstpage];
+   if (s->list >= 256) {
+      return stb__size_for_class[s->list - 256];
+   } else {
+      assert(s->list == 0);
+      return s->len << stb__page_shift;
+   }
+}
+
+void stb_sfree(void *p)
+{
+   stb__span *s;
+   if (p == NULL) return;
+   s = stb__span_for_page[stb__page_number((stb_uint) p) - stb__firstpage];
+   if (s->list >= 256) {
+      stb__smemset(p, 0xfe, stb__size_for_class[s->list-256]);
+      * (void **) p = s->first_free;
+      s->first_free = p;
+      if (--s->allocations == 0) {
+         stb__spanlist_unlink(s);
+         stb__free_span(s);
+      }
+   } else {
+      assert(s->list == 0);
+      stb__smemset(p, 0xfe, stb_ssize(p));
+      stb__free_span(s);
+   }
+}
+
+void *stb_srealloc(void *p, size_t sz)
+{
+   size_t cur_size;
+   if (p == NULL) return stb_smalloc(sz);
+   if (sz == 0) { stb_sfree(p); return NULL; }
+   cur_size = stb_ssize(p);
+   if (sz > cur_size || sz <= (cur_size >> 1)) {
+      void *q;
+      if (sz > cur_size && sz < (cur_size << 1)) sz = cur_size << 1;
+      q = stb_smalloc(sz); if (q == NULL) return NULL;
+      memcpy(q, p, sz < cur_size ? sz : cur_size);
+      stb_sfree(p);
+      return q;
+   }
+   return p;
+}
+
+void *stb_scalloc(size_t n, size_t sz)
+{
+   void *p;
+   if (n == 0 || sz == 0) return NULL;
+   if (stb_log2_ceil(n) + stb_log2_ceil(n) >= 32) return NULL;
+   p = stb_smalloc(n*sz);
+   if (p) memset(p, 0, n*sz);
+   return p;
+}
+
+char *stb_sstrdup(char *s)
+{
+   int n = strlen(s);
+   char *p = (char *) stb_smalloc(n+1);
+   if (p) strcpy(p,s);
+   return p;
+}
+#endif // STB_DEFINE
+
 
 
 #ifdef STB_STUA
@@ -8871,7 +10995,7 @@ stua_obj stua_string(char *z)
    return stu__makeptr(b);
 }
 
-// stb_obj dictionary is just an stb_extra
+// stb_obj dictionary is just an stb_idict
 static void     stu__set(stua_dict *d, stua_obj k, stua_obj v)
 { if (stb_idict_set(d, k, v)) stu__size_allocs += 8; }
 
@@ -9879,1690 +12003,6 @@ void stua_run_script(char *s)
 #endif // STB_DEFINE
 
 #endif // STB_STUA
-
-
-//////////////////////////////////////////////////////////////////////////////
-//
-//             STB-C sliding-window dictionary compression
-//
-//  This uses a DEFLATE-style sliding window, but no bitwise entropy.
-//  Everything is on byte boundaries, so you could then apply a byte-wise
-//  entropy code, though that's nowhere near as effective.
-//
-//  An STB-C stream begins with a 16-byte header:
-//      4 bytes: 0x57 0xBC 0x00 0x00
-//      8 bytes: big-endian size of decompressed data, 64-bits
-//      4 bytes: big-endian size of window (how far back decompressor may need)
-//
-//  The following symbols appear in the stream (these were determined ad hoc,
-//  not by analysis):
-//
-//  [dict]      00000100 yyyyyyyy yyyyyyyy yyyyyyyy xxxxxxxx xxxxxxxx
-//  [END]       00000101 11111010 cccccccc cccccccc cccccccc cccccccc
-//  [dict]      00000110 yyyyyyyy yyyyyyyy yyyyyyyy xxxxxxxx
-//  [literals]  00000111 zzzzzzzz zzzzzzzz
-//  [literals]  00001zzz zzzzzzzz
-//  [dict]      00010yyy yyyyyyyy yyyyyyyy xxxxxxxx xxxxxxxx
-//  [dict]      00011yyy yyyyyyyy yyyyyyyy xxxxxxxx
-//  [literals]  001zzzzz
-//  [dict]      01yyyyyy yyyyyyyy xxxxxxxx
-//  [dict]      1xxxxxxx yyyyyyyy
-//
-//      xxxxxxxx: match length - 1
-//      yyyyyyyy: backwards distance - 1
-//      zzzzzzzz: num literals - 1
-//      cccccccc: adler32 checksum of decompressed data
-//   (all big-endian)
-
-
-STB_EXTERN stb_uint stb_decompress_length(stb_uchar *input);
-STB_EXTERN stb_uint stb_decompress(stb_uchar *out,stb_uchar *in,stb_uint len);
-STB_EXTERN stb_uint stb_compress  (stb_uchar *out,stb_uchar *in,stb_uint len);
-STB_EXTERN void stb_compress_window(int z);
-STB_EXTERN void stb_compress_hashsize(unsigned int z);
-
-STB_EXTERN int stb_compress_tofile(char *filename, char *in,  stb_uint  len);
-STB_EXTERN int stb_compress_intofile(FILE *f, char *input,    stb_uint  len);
-STB_EXTERN char *stb_decompress_fromfile(char *filename,      stb_uint *len);
-
-STB_EXTERN int stb_compress_stream_start(FILE *f);
-STB_EXTERN void stb_compress_stream_end(int close);
-STB_EXTERN void stb_write(char *data, int data_len);
-
-#ifdef STB_DEFINE
-
-stb_uint stb_decompress_length(stb_uchar *input)
-{
-   return (input[8] << 24) + (input[9] << 16) + (input[10] << 8) + input[11];
-}
-
-////////////////////           decompressor         ///////////////////////
-
-// simple implementation that just writes whole thing into big block
-
-static unsigned char *stb_barrier;
-static unsigned char *stb_barrier_2;
-static unsigned char *stb_barrier_3;
-static unsigned char *stb_barrier_4;
-
-static stb_uchar *stb__dout;
-static void stb__match(stb_uchar *data, stb_uint length)
-{
-   // INVERSE of memmove... write each byte before copying the next...
-   assert (stb__dout + length <= stb_barrier);
-   if (stb__dout + length > stb_barrier) { stb__dout += length; return; }
-   if (data < stb_barrier_4) { stb__dout = stb_barrier+1; return; }
-   while (length--) *stb__dout++ = *data++;
-}
-
-static void stb__lit(stb_uchar *data, stb_uint length)
-{
-   assert (stb__dout + length <= stb_barrier);
-   if (stb__dout + length > stb_barrier) { stb__dout += length; return; }
-   if (data < stb_barrier_2) { stb__dout = stb_barrier+1; return; }
-   memcpy(stb__dout, data, length);
-   stb__dout += length;
-}
-
-#define stb__in2(x)   ((i[x] << 8) + i[(x)+1])
-#define stb__in3(x)   ((i[x] << 16) + stb__in2((x)+1))
-#define stb__in4(x)   ((i[x] << 24) + stb__in3((x)+1))
-
-static stb_uchar *stb_decompress_token(stb_uchar *i)
-{
-   if (*i >= 0x20) { // use fewer if's for cases that expand small
-      if (*i >= 0x80)       stb__match(stb__dout-i[1]-1, i[0] - 0x80 + 1), i += 2;
-      else if (*i >= 0x40)  stb__match(stb__dout-(stb__in2(0) - 0x4000 + 1), i[2]+1), i += 3;
-      else /* *i >= 0x20 */ stb__lit(i+1, i[0] - 0x20 + 1), i += 1 + (i[0] - 0x20 + 1);
-   } else { // more ifs for cases that expand large, since overhead is amortized
-      if (*i >= 0x18)       stb__match(stb__dout-(stb__in3(0) - 0x180000 + 1), i[3]+1), i += 4;
-      else if (*i >= 0x10)  stb__match(stb__dout-(stb__in3(0) - 0x100000 + 1), stb__in2(3)+1), i += 5;
-      else if (*i >= 0x08)  stb__lit(i+2, stb__in2(0) - 0x0800 + 1), i += 2 + (stb__in2(0) - 0x0800 + 1);
-      else if (*i == 0x07)  stb__lit(i+3, stb__in2(1) + 1), i += 3 + (stb__in2(1) + 1);
-      else if (*i == 0x06)  stb__match(stb__dout-(stb__in3(1)+1), i[4]+1), i += 5;
-      else if (*i == 0x04)  stb__match(stb__dout-(stb__in3(1)+1), stb__in2(4)+1), i += 6;
-   }
-   return i;
-}
-
-stb_uint stb_decompress(stb_uchar *output, stb_uchar *i, stb_uint length)
-{
-   stb_uint olen;
-   if (stb__in4(0) != 0x57bC0000) return 0;
-   if (stb__in4(4) != 0)          return 0; // error! stream is > 4GB
-   olen = stb_decompress_length(i);
-   stb_barrier_2 = i;
-   stb_barrier_3 = i+length;
-   stb_barrier = output + olen;
-   stb_barrier_4 = output;
-   i += 16;
-
-   stb__dout = output;
-   while (1) {
-      stb_uchar *old_i = i;
-      i = stb_decompress_token(i);
-      if (i == old_i) {
-         if (*i == 0x05 && i[1] == 0xfa) {
-            assert(stb__dout == output + olen);
-            if (stb__dout != output + olen) return 0;
-            if (stb_adler32(1, output, olen) != (stb_uint) stb__in4(2))
-               return 0;
-            return olen;
-         } else {
-            assert(0); /* NOTREACHED */
-            return 0;
-         }
-      }
-      assert(stb__dout <= output + olen); 
-      if (stb__dout > output + olen)
-         return 0;
-   }
-}
-
-char *stb_decompress_fromfile(char *filename, unsigned int *len)
-{
-   unsigned int n;
-   char *q;
-   unsigned char *p;
-   FILE *f = fopen(filename, "rb");   if (f == NULL) return NULL;
-   fseek(f, 0, SEEK_END);
-   n = ftell(f);
-   fseek(f, 0, SEEK_SET);
-   p = (unsigned char * ) malloc(n); if (p == NULL) return NULL;
-   fread(p, 1, n, f);
-   fclose(f);
-   if (p == NULL) return NULL;
-   if (p[0] != 0x57 || p[1] != 0xBc || p[2] || p[3]) { free(p); return NULL; }
-   q = (char *) malloc(stb_decompress_length(p)+1);
-   if (!q) { free(p); free(p); return NULL; }
-   *len = stb_decompress((unsigned char *) q, p, n);
-   if (*len) q[*len] = 0;
-   free(p);
-   return q;
-}
-
-#if 0
-//  streaming decompressor
-
-static struct
-{
-   stb__uchar *in_buffer;
-   stb__uchar *match;
-
-   stb__uint pending_literals;
-   stb__uint pending_match;
-} xx;
-
-
-
-static void stb__match(stb_uchar *data, stb_uint length)
-{
-   // INVERSE of memmove... write each byte before copying the next...
-   assert (stb__dout + length <= stb_barrier);
-   if (stb__dout + length > stb_barrier) { stb__dout += length; return; }
-   if (data < stb_barrier_2) { stb__dout = stb_barrier+1; return; }
-   while (length--) *stb__dout++ = *data++;
-}
-
-static void stb__lit(stb_uchar *data, stb_uint length)
-{
-   assert (stb__dout + length <= stb_barrier);
-   if (stb__dout + length > stb_barrier) { stb__dout += length; return; }
-   if (data < stb_barrier_2) { stb__dout = stb_barrier+1; return; }
-   memcpy(stb__dout, data, length);
-   stb__dout += length;
-}
-
-static void sx_match(stb_uchar *data, stb_uint length)
-{
-   xx.match = data;
-   xx.pending_match = length;
-}
-
-static void sx_lit(stb_uchar *data, stb_uint length)
-{
-   xx.pending_lit = length;
-}
-
-static int stb_decompress_token_state(void)
-{
-   stb__uchar *i = xx.in_buffer;
-
-   if (*i >= 0x20) { // use fewer if's for cases that expand small
-      if (*i >= 0x80)       sx_match(stb__dout-i[1]-1, i[0] - 0x80 + 1), i += 2;
-      else if (*i >= 0x40)  sx_match(stb__dout-(stb__in2(0) - 0x4000 + 1), i[2]+1), i += 3;
-      else /* *i >= 0x20 */ sx_lit(i+1, i[0] - 0x20 + 1), i += 1;
-   } else { // more ifs for cases that expand large, since overhead is amortized
-      if (*i >= 0x18)       sx_match(stb__dout-(stb__in3(0) - 0x180000 + 1), i[3]+1), i += 4;
-      else if (*i >= 0x10)  sx_match(stb__dout-(stb__in3(0) - 0x100000 + 1), stb__in2(3)+1), i += 5;
-      else if (*i >= 0x08)  sx_lit(i+2, stb__in2(0) - 0x0800 + 1), i += 2;
-      else if (*i == 0x07)  sx_lit(i+3, stb__in2(1) + 1), i += 3;
-      else if (*i == 0x06)  sx_match(stb__dout-(stb__in3(1)+1), i[4]+1), i += 5;
-      else if (*i == 0x04)  sx_match(stb__dout-(stb__in3(1)+1), stb__in2(4)+1), i += 6;
-      else return 0;
-   }
-   xx.in_buffer = i;
-   return 1;
-}
-#endif
-
-
-
-////////////////////           compressor         ///////////////////////
-
-static unsigned int stb_matchlen(stb_uchar *m1, stb_uchar *m2, stb_uint maxlen)
-{
-   stb_uint i;
-   for (i=0; i < maxlen; ++i)
-      if (m1[i] != m2[i]) return i;
-   return i;
-}
-
-// simple implementation that just takes the source data in a big block
-
-static stb_uchar *stb__out;
-static FILE      *stb__outfile;
-static stb_uint   stb__outbytes;
-
-static void stb__write(unsigned char v)
-{
-   fputc(v, stb__outfile);
-   ++stb__outbytes;
-}
-
-#define stb_out(v)    (stb__out ? *stb__out++ = (stb_uchar) (v) : stb__write((stb_uchar) (v)))
-
-static void stb_out2(stb_uint v)
-{
-   stb_out(v >> 8);
-   stb_out(v);
-}
-
-static void stb_out3(stb_uint v) { stb_out(v >> 16); stb_out(v >> 8); stb_out(v); }
-static void stb_out4(stb_uint v) { stb_out(v >> 24); stb_out(v >> 16);
-                                   stb_out(v >> 8 ); stb_out(v);                  }
-
-static void outliterals(stb_uchar *in, int numlit)
-{
-   while (numlit > 65536) {
-      outliterals(in,65536);
-      in     += 65536;
-      numlit -= 65536;
-   }
-
-   if      (numlit ==     0)    ;
-   else if (numlit <=    32)    stb_out (0x000020 + numlit-1);
-   else if (numlit <=  2048)    stb_out2(0x000800 + numlit-1);
-   else /*  numlit <= 65536) */ stb_out3(0x070000 + numlit-1);
-
-   if (stb__out) {
-      memcpy(stb__out,in,numlit);
-      stb__out += numlit;
-   } else
-      fwrite(in, 1, numlit, stb__outfile);
-}
-
-static int stb__window = 0x40000; // 256K
-void stb_compress_window(int z)
-{
-   if (z >= 0x1000000) z = 0x1000000; // limit of implementation
-   if (z <      0x100) z = 0x100;   // insanely small
-   stb__window = z;
-}
-
-static int stb_not_crap(int best, int dist)
-{
-   return   ((best > 2  &&  dist <= 0x00100)     
-          || (best > 5  &&  dist <= 0x04000)
-          || (best > 7  &&  dist <= 0x80000));
-}
-
-static  stb_uint stb__hashsize = 32768;
-void stb_compress_hashsize(unsigned int y)
-{
-   unsigned int z = 1024;
-   while (z < y) z <<= 1;
-   stb__hashsize = z >> 2;   // pass in bytes, store #pointers
-}
-
-// note that you can play with the hashing functions all you
-// want without needing to change the decompressor
-#define stb__hc(q,h,c)      (((h) << 7) + ((h) >> 25) + q[c])
-#define stb__hc2(q,h,c,d)   (((h) << 14) + ((h) >> 18) + (q[c] << 7) + q[d])
-#define stb__hc3(q,c,d,e)   ((q[c] << 14) + (q[d] << 7) + q[e])
-
-static stb_uint32 stb__running_adler;
-
-static int stb_compress_chunk(stb_uchar *history,
-                              stb_uchar *start,
-                              stb_uchar *end,
-                              int length,
-                              int *pending_literals,
-                              stb_uchar **chash,
-                              stb_uint mask)
-{
-   int window = stb__window;
-   stb_uint match_max;
-   stb_uchar *lit_start = start - *pending_literals;
-   stb_uchar *q = start;
-
-   #define STB__SCRAMBLE(h)   (((h) + ((h) >> 16)) & mask)
-
-   // stop short of the end so we don't scan off the end doing
-   // the hashing; this means we won't compress the last few bytes
-   // unless they were part of something longer
-   while (q < start+length && q+12 < end) {
-      int m;
-      stb_uint h1,h2,h3,h4, h;
-      stb_uchar *t;
-      int best = 2, dist=0;
-
-      if (q+65536 > end)
-         match_max = end-q;
-      else
-         match_max = 65536;
-
-      #define stb__nc(b,d)  ((d) <= window && ((b) > 9 || stb_not_crap(b,d)))
-
-      #define STB__TRY(t,p)  /* avoid retrying a match we already tried */ \
-                      if (p ? dist != q-t : 1)                             \
-                      if ((m = stb_matchlen(t, q, match_max)) > best)     \
-                      if (stb__nc(m,q-(t)))                                \
-                          best = m, dist = q - (t)
-
-      // rather than search for all matches, only try 4 candidate locations,
-      // chosen based on 4 different hash functions of different lengths.
-      // this strategy is inspired by LZO; hashing is unrolled here using the
-      // 'hc' macro
-      h = stb__hc3(q,0, 1, 2); h1 = STB__SCRAMBLE(h);
-                                      t = chash[h1]; if (t) STB__TRY(t,0);
-      h = stb__hc2(q,h, 3, 4); h2 = STB__SCRAMBLE(h);
-      h = stb__hc2(q,h, 5, 6);        t = chash[h2]; if (t) STB__TRY(t,1);
-      h = stb__hc2(q,h, 7, 8); h3 = STB__SCRAMBLE(h);
-      h = stb__hc2(q,h, 9,10);        t = chash[h3]; if (t) STB__TRY(t,1);
-      h = stb__hc2(q,h,11,12); h4 = STB__SCRAMBLE(h);
-                                      t = chash[h4]; if (t) STB__TRY(t,1);
-
-      // because we use a shared hash table, can only update it
-      // _after_ we've probed all of them
-      chash[h1] = chash[h2] = chash[h3] = chash[h4] = q;
-
-      if (best > 2)
-         assert(dist > 0);
-
-      // see if our best match qualifies
-      if (best < 3) { // fast path literals
-         ++q;
-      } else if (best > 2  &&  best <= 0x80    &&  dist <= 0x100) {
-         outliterals(lit_start, q-lit_start); lit_start = (q += best);
-         stb_out(0x80 + best-1);
-         stb_out(dist-1);
-      } else if (best > 5  &&  best <= 0x100   &&  dist <= 0x4000) {
-         outliterals(lit_start, q-lit_start); lit_start = (q += best);
-         stb_out2(0x4000 + dist-1);       
-         stb_out(best-1);
-      } else if (best > 7  &&  best <= 0x100   &&  dist <= 0x80000) {
-         outliterals(lit_start, q-lit_start); lit_start = (q += best);
-         stb_out3(0x180000 + dist-1);     
-         stb_out(best-1);
-      } else if (best > 8  &&  best <= 0x10000 &&  dist <= 0x80000) {
-         outliterals(lit_start, q-lit_start); lit_start = (q += best);
-         stb_out3(0x100000 + dist-1);     
-         stb_out2(best-1);
-      } else if (best > 9                      &&  dist <= 0x1000000) {
-         outliterals(lit_start, q-lit_start); lit_start = (q += best);
-         if (best <= 0x100) {
-            stb_out(0x06);
-            stb_out3(dist-1);
-            stb_out(best-1);
-         } else {
-            stb_out(0x04);
-            stb_out3(dist-1);
-            stb_out2(best-1);
-         }
-      } else {  // fallback literals if no match was a balanced tradeoff
-         ++q;
-      }
-   }
-
-   // if we didn't get all the way, add the rest to literals
-   if (q-start < length)
-      q = start+length;
-
-   // the literals are everything from lit_start to q
-   *pending_literals = (q - lit_start);
-
-   stb__running_adler = stb_adler32(stb__running_adler, start, q - start);
-   return q - start;
-}
-
-static int stb_compress_inner(stb_uchar *input, stb_uint length)
-{
-   int literals = 0;
-   stb_uint len,i;
-
-   stb_uchar **chash;
-   chash = (stb_uchar**) malloc(stb__hashsize * sizeof(stb_uchar*));
-   if (chash == NULL) return 0; // failure
-   for (i=0; i < stb__hashsize; ++i)
-      chash[i] = NULL;
-
-   // stream signature
-   stb_out(0x57); stb_out(0xbc);
-   stb_out2(0);
-
-   stb_out4(0);       // 64-bit length requires 32-bit leading 0
-   stb_out4(length);
-   stb_out4(stb__window);
-
-   stb__running_adler = 1;
-
-   len = stb_compress_chunk(input, input, input+length, length, &literals, chash, stb__hashsize-1);
-   assert(len == length);
-
-   outliterals(input+length - literals, literals);
-
-   free(chash);
-
-   stb_out2(0x05fa); // end opcode
-
-   stb_out4(stb__running_adler);
-
-   return 1; // success
-}
-
-stb_uint stb_compress(stb_uchar *out, stb_uchar *input, stb_uint length)
-{
-   stb__out = out;
-   stb__outfile = NULL;
-
-   stb_compress_inner(input, length);
-
-   return stb__out - out;
-}
-
-int stb_compress_tofile(char *filename, char *input, unsigned int length)
-{
-   int maxlen = length + 512 + (length >> 2); // total guess
-   char *buffer = (char *) malloc(maxlen);
-   int blen = stb_compress((stb_uchar*)buffer, (stb_uchar*)input, length);
-   
-   stb__out = NULL;
-   stb__outfile = fopen(filename, "wb");
-   if (!stb__outfile) return 0;
-
-   stb__outbytes = 0;
-
-   if (!stb_compress_inner((stb_uchar*)input, length))
-      return 0;
-
-   fclose(stb__outfile);
-
-   return stb__outbytes;
-}
-
-int stb_compress_intofile(FILE *f, char *input, unsigned int length)
-{
-   int maxlen = length + 512 + (length >> 2); // total guess
-   //char *buffer = (char*)malloc(maxlen);
-   //int blen = stb_compress((stb_uchar*)buffer, (stb_uchar*)input, length);
-   
-   stb__out = NULL;
-   stb__outfile = f;
-   if (!stb__outfile) return 0;
-
-   stb__outbytes = 0;
-
-   if (!stb_compress_inner((stb_uchar*)input, length))
-      return 0;
-
-   return stb__outbytes;
-}
-
-//////////////////////    streaming I/O version    /////////////////////
-
-
-static stb_uint stb_out_backpatch_id(void)
-{
-   if (stb__out)
-      return (stb_uint) stb__out;
-   else
-      return ftell(stb__outfile);
-}
-
-static void stb_out_backpatch(stb_uint id, stb_uint value)
-{
-   stb_uchar data[4] = { value >> 24, value >> 16, value >> 8, value };
-   if (stb__out) {
-      memcpy((void *) id, data, 4);
-   } else {
-      stb_uint where = ftell(stb__outfile);
-      fseek(stb__outfile, id, SEEK_SET);
-      fwrite(data, 4, 1, stb__outfile);
-      fseek(stb__outfile, where, SEEK_SET);
-   }
-}
-
-// ok, the wraparound buffer was a total failure. let's instead
-// use a copying-in-place buffer, which lets us share the code.
-// This is way less efficient but it'll do for now.
-
-static struct
-{
-   stb_uchar *buffer;
-   int size;           // physical size of buffer in bytes
-
-   int valid;          // amount of valid data in bytes
-   int start;          // bytes of data already output
-
-   int window;
-   int fsize;
-
-   int pending_literals; // bytes not-quite output but counted in start
-   int length_id;
-
-   stb_uint total_bytes;
-
-   stb_uchar **chash;
-   stb_uint    hashmask;
-} xtb;
-
-static int stb_compress_streaming_start(void)
-{
-   stb_uint i;
-   xtb.size = stb__window * 3;
-   xtb.buffer = (stb_uchar*)malloc(xtb.size);
-   if (!xtb.buffer) return 0;
-
-   xtb.chash = (stb_uchar**)malloc(sizeof(*xtb.chash) * stb__hashsize);
-   if (!xtb.chash) {
-      free(xtb.buffer);
-      return 0;
-   }
-
-   for (i=0; i < stb__hashsize; ++i)
-      xtb.chash[i] = NULL;
-
-   xtb.hashmask = stb__hashsize-1;
-
-   xtb.valid        = 0;
-   xtb.start        = 0;
-   xtb.window       = stb__window;
-   xtb.fsize        = stb__window;
-   xtb.pending_literals = 0;
-   xtb.total_bytes  = 0;
-
-      // stream signature
-   stb_out(0x57); stb_out(0xbc); stb_out2(0);
-
-   stb_out4(0);       // 64-bit length requires 32-bit leading 0
-
-   xtb.length_id = stb_out_backpatch_id();
-   stb_out4(0);       // we don't know the output length yet
-
-   stb_out4(stb__window);
-
-   stb__running_adler = 1;
-
-   return 1;
-}
-
-static int stb_compress_streaming_end(void)
-{
-   // flush out any remaining data
-   stb_compress_chunk(xtb.buffer, xtb.buffer+xtb.start, xtb.buffer+xtb.valid,
-                      xtb.valid-xtb.start, &xtb.pending_literals, xtb.chash, xtb.hashmask);
-
-   // write out pending literals
-   outliterals(xtb.buffer + xtb.valid - xtb.pending_literals, xtb.pending_literals);
-
-   stb_out2(0x05fa); // end opcode
-   stb_out4(stb__running_adler);
-
-   stb_out_backpatch(xtb.length_id, xtb.total_bytes);
-
-   free(xtb.buffer);
-   free(xtb.chash);
-   return 1;
-}
-
-void stb_write(char *data, int data_len)
-{
-   stb_uint i;
-
-   // @TODO: fast path for filling the buffer and doing nothing else
-   //   if (xtb.valid + data_len < xtb.size)
-
-   xtb.total_bytes += data_len;
-
-   while (data_len) {
-      // fill buffer
-      if (xtb.valid < xtb.size) {
-         int amt = xtb.size - xtb.valid;
-         if (data_len < amt) amt = data_len;
-         memcpy(xtb.buffer + xtb.valid, data, amt);
-         data_len -= amt;
-         data     += amt;
-         xtb.valid += amt;
-      }
-      if (xtb.valid < xtb.size)
-         return;
-
-      // at this point, the buffer is full
-
-      // if we can process some data, go for it; make sure
-      // we leave an 'fsize's worth of data, though
-      if (xtb.start + xtb.fsize < xtb.valid) {
-         int amount = (xtb.valid - xtb.fsize) - xtb.start;
-         int n;
-         assert(amount > 0);
-         n = stb_compress_chunk(xtb.buffer, xtb.buffer + xtb.start, xtb.buffer + xtb.valid,
-                                amount, &xtb.pending_literals, xtb.chash, xtb.hashmask);
-         xtb.start += n;
-      }
-
-      assert(xtb.start + xtb.fsize >= xtb.valid);
-      // at this point, our future size is too small, so we
-      // need to flush some history. we, in fact, flush exactly
-      // one window's worth of history
-
-      {
-         int flush = xtb.window;
-         assert(xtb.start >= flush);
-         assert(xtb.valid >= flush);
-
-         // if 'pending literals' extends back into the shift region,
-         // write them out
-         if (xtb.start - xtb.pending_literals < flush) {
-            outliterals(xtb.buffer + xtb.start - xtb.pending_literals, xtb.pending_literals);
-            xtb.pending_literals = 0;
-         }
-
-         // now shift the window
-         memmove(xtb.buffer, xtb.buffer + flush, xtb.valid - flush);
-         xtb.start -= flush;
-         xtb.valid -= flush;
-   
-         for (i=0; i <= xtb.hashmask; ++i)
-            if (xtb.chash[i] < xtb.buffer + flush)
-               xtb.chash[i] = NULL;
-            else
-               xtb.chash[i] -= flush;
-      }
-      // and now that we've made room for more data, go back to the top
-   }
-}
-
-int stb_compress_stream_start(FILE *f)
-{
-   stb__out = NULL;
-   stb__outfile = f;
-
-   if (f == NULL)
-      return 0;
-
-   if (!stb_compress_streaming_start())
-      return 0;
-
-   return 1;
-}
-
-void stb_compress_stream_end(int close)
-{
-   stb_compress_streaming_end();
-   if (close && stb__outfile) {
-      fclose(stb__outfile);
-   }
-}
-
-#endif // STB_DEFINE
-
-
-//////////////////////////////////////////////////////////////////////////////
-//
-//                         Threads
-//
-
-
-typedef void * (*stb_thread_func)(void *);
-
-// do not rely on these types, this is an implementation detail.
-// compare against STB_THREAD_NULL and ST_SEMAPHORE_NULL
-typedef void *stb_thread;
-typedef void *stb_semaphore;
-typedef void *stb_mutex;
-typedef struct stb__sync *stb_sync;
-
-#define STB_SEMAPHORE_NULL    NULL
-#define STB_THREAD_NULL       NULL
-#define STB_MUTEX_NULL        NULL
-#define STB_SYNC_NULL         NULL
-
-// get the number of processors (limited to those in the affinity mask for this process).
-STB_EXTERN int stb_processor_count(void);
-
-// stb_work functions: queue up work to be done by some worker threads
-
-// set number of threads to serve the queue; you can change this on the fly,
-// but if you decrease it, it won't decrease until things currently on the
-// queue are finished
-STB_EXTERN void          stb_work_numthreads(int n);
-// set maximum number of units in the queue; you can only set this BEFORE running any work functions
-STB_EXTERN int           stb_work_maxunits(int n);
-// enqueue some work to be done (can do this from any thread, or even from a piece of work);
-// return value of f is stored in *return_code if non-NULL
-STB_EXTERN int           stb_work(stb_thread_func f, void *d, volatile void **return_code);
-// as above, but stb_sync_reach is called on 'rel' after work is complete
-STB_EXTERN int           stb_work_reach(stb_thread_func f, void *d, volatile void **return_code, stb_sync rel);
-
-
-// support for independent queues with their own threads
-
-typedef struct stb__workqueue stb_workqueue;
-
-STB_EXTERN stb_workqueue*stb_workq_new(int numthreads, int max_units);
-STB_EXTERN stb_workqueue*stb_workq_new_flags(int numthreads, int max_units, int no_add_mutex, int no_remove_mutex);
-STB_EXTERN void          stb_workq_delete(stb_workqueue *q);
-STB_EXTERN void          stb_workq_numthreads(stb_workqueue *q, int n);
-STB_EXTERN int           stb_workq(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code);
-STB_EXTERN int           stb_workq_reach(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel);
-STB_EXTERN int           stb_workq_length(stb_workqueue *q);
-
-STB_EXTERN stb_thread    stb_create_thread (stb_thread_func f, void *d);
-STB_EXTERN stb_thread    stb_create_thread2(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel);
-STB_EXTERN void          stb_destroy_thread(stb_thread t);
-
-STB_EXTERN stb_semaphore stb_sem_new(int max_val, int is_blocked_flag);
-STB_EXTERN void          stb_sem_delete (stb_semaphore s);
-STB_EXTERN void          stb_sem_waitfor(stb_semaphore s);
-STB_EXTERN void          stb_sem_release(stb_semaphore s);
-
-STB_EXTERN stb_mutex     stb_mutex_new(void);
-STB_EXTERN void          stb_mutex_delete(stb_mutex m);
-STB_EXTERN void          stb_mutex_begin(stb_mutex m);
-STB_EXTERN void          stb_mutex_end(stb_mutex m);
-
-STB_EXTERN stb_sync      stb_sync_new(void);
-STB_EXTERN void          stb_sync_delete(stb_sync s);
-STB_EXTERN int           stb_sync_set_target(stb_sync s, int count);
-STB_EXTERN void          stb_sync_reach_and_wait(stb_sync s);    // wait for 'target' reachers
-STB_EXTERN int           stb_sync_reach(stb_sync s);
-
-#ifdef STB_DEFINE
-
-typedef struct
-{
-   stb_thread_func f;
-   void *d;
-   volatile void **return_val;
-   stb_semaphore sem;
-} stb__thread;
-
-// initialize this in lowest-level create thread routine if not initted
-static stb_semaphore stb__threadsem;
-
-#ifdef _WIN32
-
-// avoid including windows.h -- note that our definitions aren't
-// exactly the same (we don't define the security descriptor struct)
-// so if you want to include windows.h, make sure you do it first.
-#include <process.h>
-
-#ifndef _WINDOWS_  // check windows.h guard
-#define STB__IMPORT   STB_EXTERN __declspec(dllimport)
-#define STB__DW       unsigned long
-
-STB__IMPORT int     __stdcall TerminateThread(void *, STB__DW);
-STB__IMPORT void *  __stdcall CreateSemaphoreA(void *sec, long,long,char*);
-STB__IMPORT int     __stdcall CloseHandle(void *);
-STB__IMPORT STB__DW __stdcall WaitForSingleObject(void *, STB__DW);
-STB__IMPORT int     __stdcall ReleaseSemaphore(void *, long, long *);
-STB__IMPORT void    __stdcall Sleep(STB__DW);
-#endif
-
-static void stb__thread_run(void *t)
-{
-   void *res;
-   stb__thread info = * (stb__thread *) t;
-   free(t);
-   res = info.f(info.d);
-   if (info.return_val)
-      *info.return_val = res;
-   if (info.sem != STB_SEMAPHORE_NULL)
-      stb_sem_release(info.sem);
-}
-
-static stb_thread stb_create_thread_raw(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
-{
-#ifdef _MT
-#if defined(STB_FASTMALLOC) && !defined(STB_FASTMALLOC_ITS_OKAY_I_ONLY_MALLOC_IN_ONE_THREAD)
-   stb_fatal("Error! Cannot use STB_FASTMALLOC with threads.\n");
-   return STB_THREAD_NULL;
-#else
-   unsigned long id;
-   stb__thread *data = (stb__thread *) malloc(sizeof(*data));
-   if (!data) return NULL;
-   if (stb__threadsem == STB_SEMAPHORE_NULL)
-      stb__threadsem = stb_sem_new(1,0);
-   data->f = f;
-   data->d = d;
-   data->return_val = return_code;
-   data->sem = rel;
-   id = _beginthread(stb__thread_run, 0, data);
-   if (id == -1) return NULL;
-   return (void *) id;
-#endif
-#else
-   stb_fatal("Must compile mult-threaded to use stb_thread/stb_work.");
-   return NULL;
-#endif
-}
-
-// trivial win32 wrappers
-void          stb_destroy_thread(stb_thread t)   { TerminateThread(t,0); }
-stb_semaphore stb_sem_new(int maxv,int blocked)  { return CreateSemaphoreA(NULL,blocked?0:maxv,maxv,NULL); }
-void          stb_sem_delete(stb_semaphore s)    { if (s != NULL) CloseHandle(s); }
-void          stb_sem_waitfor(stb_semaphore s)   { WaitForSingleObject(s, 0xffffffff); } // INFINITE
-void          stb_sem_release(stb_semaphore s)   { ReleaseSemaphore(s,1,NULL); }
-static void   stb__thread_sleep(int ms)          { Sleep(ms); }
-
-#ifndef _WINDOWS_
-STB__IMPORT int __stdcall GetProcessAffinityMask(void *, STB__DW *, STB__DW *);
-STB__IMPORT void * __stdcall GetCurrentProcess(void);
-#endif
-
-int stb_processor_count(void)
-{
-   unsigned long proc,sys;
-   GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys);
-   return stb_bitcount(proc);
-}
-
-#ifdef _WINDOWS_
-#define STB_MUTEX_NATIVE
-DWORD foob;
-void *stb_mutex_new(void)
-{
-   CRITICAL_SECTION *p = (CRITICAL_SECTION *) malloc(sizeof(*p));
-   if (p)
-      InitializeCriticalSectionAndSpinCount(p, 500);
-   return p;
-}
-
-void stb_mutex_delete(void *p)
-{
-   if (p) {
-      DeleteCriticalSection((CRITICAL_SECTION *) p);
-      free(p);
-   }
-}
-
-void stb_mutex_begin(void *p)
-{
-   EnterCriticalSection((CRITICAL_SECTION *) p);
-}
-
-void stb_mutex_end(void *p)
-{
-   LeaveCriticalSection((CRITICAL_SECTION *) p);
-}
-#endif // _WINDOWS_
-
-#if 0
-// for future reference, 
-// InterlockedCompareExchange for x86:
- int cas64_mp(void * dest, void * xcmp, void * xxchg) {
-        __asm
-        {
-                mov             esi, [xxchg]            ; exchange
-                mov             ebx, [esi + 0]
-                mov             ecx, [esi + 4]
-
-                mov             esi, [xcmp]                     ; comparand
-                mov             eax, [esi + 0]
-                mov             edx, [esi + 4]
-
-                mov             edi, [dest]                     ; destination
-                lock cmpxchg8b  [edi]
-                jz              yyyy;
-
-                mov             [esi + 0], eax;
-                mov             [esi + 4], edx;
-
-yyyy:
-                xor             eax, eax;
-                setz    al;
-        };
-
-inline unsigned __int64 _InterlockedCompareExchange64(volatile unsigned __int64 *dest
-                           ,unsigned __int64 exchange
-                           ,unsigned __int64 comperand)
-{
-    //value returned in eax::edx
-    __asm {
-        lea esi,comperand;
-        lea edi,exchange;
-
-        mov eax,[esi];
-        mov edx,4[esi];
-        mov ebx,[edi];
-        mov ecx,4[edi];
-        mov esi,dest;
-        lock CMPXCHG8B [esi];
-    } 
-#endif // #if 0
-
-#endif // _WIN32
-
-stb_thread stb_create_thread2(stb_thread_func f, void *d, volatile void **return_code, stb_semaphore rel)
-{
-   return stb_create_thread_raw(f,d,return_code,rel);
-}
-
-stb_thread stb_create_thread(stb_thread_func f, void *d)
-{
-   return stb_create_thread2(f,d,NULL,STB_SEMAPHORE_NULL);
-}
-
-// mutex implemented by wrapping semaphore
-#ifndef STB_MUTEX_NATIVE
-stb_mutex stb_mutex_new(void)            { return stb_sem_new(1,0); }
-void      stb_mutex_delete(stb_mutex m)  { stb_sem_delete (m);      }
-void      stb_mutex_begin(stb_mutex m)   { stb_sem_waitfor(m);      }
-void      stb_mutex_end(stb_mutex m)     { stb_sem_release(m);      }
-#endif
-
-// thread merge operation
-struct stb__sync
-{
-   int target;  // target number of threads to hit it
-   int sofar;   // total threads that hit it
-   int waiting; // total threads waiting
-
-   stb_mutex start;   // mutex to prevent starting again before finishing previous
-   stb_mutex mutex;   // mutex while tweaking state
-   stb_semaphore release; // semaphore wake up waiting threads
-      // we have to wake them up one at a time, rather than using a single release
-      // call, because win32 semaphores don't let you dynamically change the max count!
-};
-
-stb_sync stb_sync_new(void)
-{
-   stb_sync s = malloc(sizeof(*s));
-   if (!s) return s;
-
-   s->target = s->sofar = s->waiting = 0;
-   s->mutex   = stb_mutex_new();
-   s->start   = stb_mutex_new();
-   s->release = stb_sem_new(1,0);
-   if (!s->mutex || !s->release || !s->start) {
-      if (s->mutex  ) stb_mutex_delete(s->mutex);
-      if (s->start  ) stb_mutex_delete(s->mutex);
-      if (s->release) stb_sem_delete(s->release);
-      free(s);
-      return NULL;
-   }
-   stb_sem_waitfor(s->release); // put merge into blocking state
-   return s;
-}
-
-void stb_sync_delete(stb_sync s)
-{
-   if (s->waiting) {
-      // it's bad to delete while there are threads waiting!
-      // shall we wait for them to reach, or just bail? just bail
-      assert(0);
-   }
-   stb_mutex_delete(s->mutex);
-   stb_mutex_delete(s->release);
-   free(s);
-}
-
-int stb_sync_set_target(stb_sync s, int count)
-{
-   // don't allow setting a target until the last one is fully released;
-   // note that this can lead to inefficient pipelining, and maybe we'd
-   // be better off ping-ponging between two internal syncs?
-   // I tried seeing how often this happened using TryEnterCriticalSection
-   // and could _never_ get it to happen in imv(stb), even with more threads
-   // than processors. So who knows!
-   stb_mutex_begin(s->start);
-
-   // this mutex is pointless, since it's not valid for threads
-   // to call reach() before anyone calls set_target() anyway
-   stb_mutex_begin(s->mutex);
-
-   assert(s->target == 0); // enforced by start mutex
-   s->target  = count;
-   s->sofar   = 0;
-   s->waiting = 0;
-   stb_mutex_end(s->mutex);
-   return TRUE;
-}
-
-void stb__sync_release(stb_sync s)
-{
-   if (s->waiting)
-      stb_sem_release(s->release);
-   else {
-      s->target = 0;
-      stb_mutex_end(s->start);
-   }
-}
-
-int stb_sync_reach(stb_sync s)
-{
-   int n;
-   stb_mutex_begin(s->mutex);
-   assert(s->sofar < s->target);
-   n = ++s->sofar; // record this value to avoid possible race if we did 'return s->sofar';
-   if (s->sofar == s->target)
-      stb__sync_release(s);
-   stb_mutex_end(s->mutex);
-   return n;
-}
-
-void stb_sync_reach_and_wait(stb_sync s)
-{
-   stb_mutex_begin(s->mutex);
-   assert(s->sofar < s->target);
-   ++s->sofar;
-   if (s->sofar == s->target) {
-      stb__sync_release(s);
-      stb_mutex_end(s->mutex);
-   } else {
-      ++s->waiting; // we're waiting, so one more waiter
-      stb_mutex_end(s->mutex); // release the mutex to other threads
-
-      stb_sem_waitfor(s->release); // wait for merge completion
-
-      stb_mutex_begin(s->mutex); // on merge completion, grab the mutex
-      --s->waiting; // we're done waiting
-      stb__sync_release(s);
-      stb_mutex_end(s->mutex); // and now we're done
-      // this ends the same as the first case, but it's a lot
-      // clearer to understand without sharing the code
-   }
-}
-
-static int stb__work_maxitems = 64;
-
-typedef struct
-{
-   stb_thread_func f;
-   void *d;
-   volatile void **retval;
-   stb_sync sync;
-} stb__workinfo;
-
-static volatile stb__workinfo *stb__work;
-
-struct stb__workqueue
-{
-   int maxitems, numthreads;
-   int oldest, newest;
-   stb_semaphore available;
-   stb_mutex add, remove;
-   stb__workinfo *work;
-   int added;
-   int done;
-};
-
-static void *stb__thread_workloop(void *p)
-{
-   volatile stb_workqueue *q = (volatile stb_workqueue *) p;
-   for(;;) {
-      void *z;
-      stb__workinfo w;
-      stb_sem_waitfor(q->available);
-      stb_mutex_begin(q->remove);
-      memcpy(&w, (void *) &q->work[q->oldest], sizeof(w)); // C++ won't copy
-      if (++q->oldest == q->maxitems)
-         q->oldest = 0;
-      stb_mutex_end(q->remove);
-      if (w.f == NULL) // null work is a signal to end the thread
-         return NULL;
-      z = w.f(w.d);
-      if (w.retval) *w.retval = z;
-      if (w.sync != STB_SYNC_NULL) stb_sync_reach(w.sync);
-   }
-}
-
-static void *stb__thread_workloop_nomutex(void *p)
-{
-   volatile stb_workqueue *q = (volatile stb_workqueue *) p;
-   for(;;) {
-      void *z;
-      stb__workinfo w;
-      stb_sem_waitfor(q->available);
-      memcpy(&w, (void *) &q->work[q->oldest], sizeof(w)); // C++ won't copy
-      if (++q->oldest == q->maxitems)
-         q->oldest = 0;
-      if (w.f == NULL) // null work is a signal to end the thread
-         return NULL;
-      z = w.f(w.d);
-      if (w.retval) *w.retval = z;
-      if (w.sync != STB_SYNC_NULL) stb_sync_reach(w.sync);
-   }
-}
-
-static stb_workqueue *stb__work_global;
-
-stb_workqueue *stb_workq_new(int num_threads, int max_units)
-{
-   return stb_workq_new_flags(num_threads, max_units, 0,0);
-}
-
-void stb__workq_delete_raw(stb_workqueue *q)
-{
-   free(q->work);
-   stb_mutex_delete(q->add);
-   stb_mutex_delete(q->remove);
-   stb_sem_delete(q->available);
-   free(q);
-}
-
-stb_workqueue *stb_workq_new_flags(int numthreads, int max_units, int no_add_mutex, int no_remove_mutex)
-{
-   stb_workqueue *q = (stb_workqueue *) malloc(sizeof(*q));
-   if (q == NULL) return NULL;
-   q->available  = stb_sem_new(stb__work_maxitems,1);
-   q->add        = no_add_mutex    ? STB_MUTEX_NULL : stb_mutex_new();
-   q->remove     = no_remove_mutex ? STB_MUTEX_NULL : stb_mutex_new();
-   q->maxitems = max_units < 1 ? 1 : max_units;
-   ++q->maxitems; // since head cannot equal tail, we need one extra
-   q->work = (stb__workinfo *) malloc(q->maxitems * sizeof(*q->work));
-   q->newest = q->oldest = 0;
-   q->numthreads = 0;
-   q->added = q->done = 0;
-   if (q->work == NULL || q->available == STB_SEMAPHORE_NULL ||
-       (q->add == STB_MUTEX_NULL && !no_add_mutex) ||
-       (q->remove == STB_MUTEX_NULL && !no_remove_mutex)) {
-      stb__workq_delete_raw(q);
-      return NULL;
-   }
-   stb_workq_numthreads(q, numthreads);
-   return q;
-}
-
-static void stb_work_init(int num_threads)
-{
-   if (stb__work_global == NULL) {
-      if (stb__threadsem != STB_SEMAPHORE_NULL) stb_sem_waitfor(stb__threadsem);
-      if (stb__work_global == NULL) {
-         stb__work_global = stb_workq_new(num_threads, stb__work_maxitems);
-      }
-      if (stb__threadsem != STB_SEMAPHORE_NULL) stb_sem_release(stb__threadsem);
-   }
-}
-
-void stb_workq_delete(stb_workqueue *q)
-{
-   for(;;) {
-      stb_mutex_begin(q->add);
-      if (q->oldest == q->newest) {
-         stb_mutex_end(q->add);
-         stb__workq_delete_raw(q);
-         return;
-      }
-      stb_mutex_end(q->add);
-      stb__thread_sleep(1);
-   }
-}
-
-int stb_work_maxunits(int n)
-{
-   if (stb__work_global == NULL) {
-      stb__work_maxitems = n;
-      stb_work_init(1);
-   }
-   return stb__work_maxitems;
-}
-
-static int stb__work_raw(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
-{
-   int n, res;
-   stb__workinfo w;
-   if (q == NULL) {
-      stb_work_init(1);
-      q = stb__work_global;
-   }
-   w.f = f;
-   w.d = d;
-   w.retval = return_code;
-   w.sync = rel;
-   stb_mutex_begin(q->add);
-   n = q->newest+1; if (n == q->maxitems) n=0;
-   if (n == q->oldest) {
-      // wraparound, bail!
-      res = 0;
-   } else {
-      res = 1;
-      memcpy((void *) &q->work[q->newest], &w, sizeof(w));  // C++ won't copy
-      q->newest = n;
-   }
-   stb_mutex_end(q->add);
-   if (res)
-      stb_sem_release(q->available);
-   return res;
-}
-
-int stb_workq_length(stb_workqueue *q)
-{
-   int o,n;
-   if (q->remove) stb_sem_waitfor(q->remove);
-   if (q->add   ) stb_sem_waitfor(q->add);
-   o = q->oldest;
-   n = q->newest;
-   if (q->add   ) stb_sem_release(q->add);
-   if (q->remove) stb_sem_release(q->remove);
-   if (n > o) o += q->maxitems;
-   return o-n;
-}
-
-int stb_workq(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code)
-{
-   if (f == NULL) return 0;
-   return stb_workq_reach(q, f, d, return_code, NULL);
-}
-
-int stb_workq_reach(stb_workqueue *q, stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
-{
-   if (f == NULL) return 0;
-   return stb__work_raw(q, f, d, return_code, rel);
-}
-
-void stb_workq_numthreads(stb_workqueue *q, int n)
-{
-   stb_sem_waitfor(stb__threadsem);
-   while (q->numthreads < n) {
-      if (q->remove == STB_SEMAPHORE_NULL)
-         stb_create_thread(stb__thread_workloop_nomutex, q);
-      else
-         stb_create_thread(stb__thread_workloop, q);
-      ++q->numthreads;
-   }
-   while (q->numthreads > n) {
-      stb__work_raw(q, NULL, NULL, NULL, NULL);
-      --q->numthreads;
-   }
-   stb_sem_release(stb__threadsem);
-}
-
-int stb_work(stb_thread_func f, void *d, volatile void **return_code)
-{
-   return stb_workq(stb__work_global, f,d,return_code);
-}
-
-int stb_work_reach(stb_thread_func f, void *d, volatile void **return_code, stb_sync rel)
-{
-   return stb_workq_reach(stb__work_global, f,d,return_code,rel);
-}
-
-void stb_work_numthreads(int n)
-{
-   if (stb__work_global == NULL)
-      stb_work_init(n);
-   else
-      stb_workq_numthreads(stb__work_global, n);
-}
-#endif // STB_DEFINE
-
-//////////////////////////////////////////////////////////////////////////////
-//
-//                         Fast malloc implementation
-//
-//   This is a clone of TCMalloc, but without the thread support.
-//      1. large objects are allocated directly, page-aligned
-//      2. small objects are allocated in homogeonous heaps, 0 overhead
-//
-//   We keep an allocation table for pages a la TCMalloc. This would
-//   require 4MB for the entire address space, but we only allocate
-//   the parts that are in use. The overhead from using homogenous heaps
-//   everywhere is 3MB. (That is, if you allocate 1 object of each size,
-//   you'll use 3MB.)
-
-#if defined(STB_DEFINE) && (defined(_WIN32) || defined(STB_FASTMALLOC))
-
-#ifdef _WIN32
-   #ifndef _WINDOWS_
-   STB__IMPORT void * __stdcall VirtualAlloc(void *p, unsigned long size, unsigned long type, unsigned long protect);
-   STB__IMPORT int   __stdcall VirtualFree(void *p, unsigned long size, unsigned long freetype);
-   #endif
-   #define stb__alloc_pages_raw(x)     (stb_uint32) VirtualAlloc(NULL, (x), 0x3000, 0x04)
-   #define stb__dealloc_pages_raw(p)   VirtualFree((void *) p, 0, 0x8000)
-#else
-   #error "Platform not currently supported"
-#endif
-
-typedef struct stb__span
-{
-   int                start, len;
-   struct stb__span  *next, *prev;
-   void              *first_free;
-   unsigned short     list; // 1..256 free; 257..511 sizeclass; 0=large block
-   short              allocations; // # outstanding allocations for sizeclass
-} stb__span;  // 24
-
-static stb__span **stb__span_for_page;
-static int stb__firstpage, stb__lastpage;
-static void stb__update_page_range(int first, int last)
-{
-   stb__span **sfp;
-   int i, f,l;
-   if (first >= stb__firstpage && last <= stb__lastpage) return;
-   if (stb__span_for_page == NULL) {
-      f = first;
-      l = f+stb_max(last-f, 16384);
-      l = stb_min(l, 1<<20);
-   } else if (last > stb__lastpage) {
-      f = stb__firstpage;
-      l = f + (stb__lastpage - f) * 2;
-      l = stb_clamp(last, l,1<<20);
-   } else {
-      l = stb__lastpage;
-      f = l - (l - stb__firstpage) * 2;
-      f = stb_clamp(f, 0,first);
-   }
-   sfp = (stb__span **) stb__alloc_pages_raw(sizeof(void *) * (l-f));
-   for (i=f; i < stb__firstpage; ++i) sfp[i - f] = NULL;
-   for (   ; i < stb__lastpage ; ++i) sfp[i - f] = stb__span_for_page[i - stb__firstpage];
-   for (   ; i < l             ; ++i) sfp[i - f] = NULL;
-   if (stb__span_for_page) stb__dealloc_pages_raw(stb__span_for_page);
-   stb__firstpage = f;
-   stb__lastpage  = l;
-   stb__span_for_page = sfp;
-}
-
-static stb__span *stb__span_free=NULL;
-static stb__span *stb__span_first, *stb__span_end;
-static stb__span *stb__span_alloc(void)
-{
-   stb__span *s = stb__span_free;
-   if (s)
-      stb__span_free = s->next;
-   else {
-      if (!stb__span_first) {
-         stb__span_first = (stb__span *) stb__alloc_pages_raw(65536);
-         if (stb__span_first == NULL) return NULL;
-         stb__span_end = stb__span_first + (65536 / sizeof(stb__span));
-      }
-      s = stb__span_first++;
-      if (stb__span_first == stb__span_end) stb__span_first = NULL;
-   }
-   return s;
-}
-
-static stb__span *stb__spanlist[512];
-
-static void stb__spanlist_unlink(stb__span *s)
-{
-   if (s->prev)
-      s->prev->next = s->next;
-   else {
-      int n = s->list;
-      assert(stb__spanlist[n] == s);
-      stb__spanlist[n] = s->next;
-   }
-   if (s->next)
-      s->next->prev = s->prev;
-   s->next = s->prev = NULL;
-   s->list = 0;
-}
-
-static void stb__spanlist_add(int n, stb__span *s)
-{
-   s->list = n;
-   s->next = stb__spanlist[n];
-   s->prev = NULL;
-   stb__spanlist[n] = s;
-   if (s->next) s->next->prev = s;
-}
-
-#define stb__page_shift       12
-#define stb__page_size        (1 << stb__page_shift)
-#define stb__page_number(x)   ((x) >> stb__page_shift)
-#define stb__page_address(x)  ((x) << stb__page_shift)
-
-static void stb__set_span_for_page(stb__span *s)
-{
-   int i;
-   for (i=0; i < s->len; ++i)
-      stb__span_for_page[s->start + i - stb__firstpage] = s;
-}
-
-static stb__span *stb__coalesce(stb__span *a, stb__span *b)
-{
-   assert(a->start + a->len == b->start);
-   if (a->list) stb__spanlist_unlink(a);
-   if (b->list) stb__spanlist_unlink(b);
-   a->len += b->len;
-   b->len = 0;
-   b->next = stb__span_free;
-   stb__span_free = b;
-   stb__set_span_for_page(a);
-   return a;
-}
-
-static void stb__free_span(stb__span *s)
-{
-   stb__span *n = NULL;
-   if (s->start > stb__firstpage) {
-      n = stb__span_for_page[s->start-1 - stb__firstpage];
-      if (n && n->allocations == -2 && n->start + n->len == s->start) s = stb__coalesce(n,s);
-   }
-   if (s->start + s->len < stb__lastpage) {
-      n = stb__span_for_page[s->start + s->len - stb__firstpage];
-      if (n && n->allocations == -2 && s->start + s->len == n->start) s = stb__coalesce(s,n);
-   }
-   s->allocations = -2;
-   stb__spanlist_add(s->len > 256 ? 256 : s->len, s);
-}
-
-static stb__span *stb__alloc_pages(int num)
-{
-   stb__span *s = stb__span_alloc();
-   int p;
-   if (!s) return NULL;
-   p = stb__alloc_pages_raw(num << stb__page_shift);
-   if (p == 0) { s->next = stb__span_free; stb__span_free = s; return 0; }
-   assert(stb__page_address(stb__page_number(p)) == p);
-   p = stb__page_number(p);
-   stb__update_page_range(p, p+num);
-   s->start = p;
-   s->len   = num;
-   s->next  = NULL;
-   s->prev  = NULL;
-   stb__set_span_for_page(s);
-   return s;
-}
-
-static stb__span *stb__alloc_span(int pagecount)
-{
-   int i;
-   stb__span *p = NULL;
-   for(i=pagecount; i < 256; ++i)
-      if (stb__spanlist[i]) {
-         p = stb__spanlist[i];
-         break;
-      }
-   if (!p) {
-      p = stb__spanlist[256];
-      while (p && p->len < pagecount)
-         p = p->next;
-   }
-   if (!p) {
-      p = stb__alloc_pages(pagecount < 16 ? 16 : pagecount);
-      if (p == NULL) return 0;
-   } else
-      stb__spanlist_unlink(p);
-      
-   if (p->len > pagecount) {
-      stb__span *q = stb__span_alloc();
-      if (q) {
-         q->start = p->start + pagecount;
-         q->len   = p->len   - pagecount;
-         p->len   = pagecount;
-         for (i=0; i < q->len; ++i)
-            stb__span_for_page[q->start+i - stb__firstpage] = q;
-         stb__spanlist_add(q->len > 256 ? 256 : q->len, q);
-      }
-   }
-   return p;
-}
-
-#define STB__MAX_SMALL_SIZE     32768
-#define STB__MAX_SIZE_CLASSES   256
-
-static unsigned char stb__class_base[32];
-static unsigned char stb__class_shift[32];
-static unsigned char stb__pages_for_class[STB__MAX_SIZE_CLASSES];
-static           int stb__size_for_class[STB__MAX_SIZE_CLASSES];
-
-stb__span *stb__get_nonempty_sizeclass(int c)
-{
-   int s = c + 256, i, size, tsize; // remap to span-list index
-   char *z;
-   void *q;
-   stb__span *p = stb__spanlist[s];
-   if (p) {
-      if (p->first_free) return p; // fast path: it's in the first one in list
-      for (p=p->next; p; p=p->next)
-         if (p->first_free) {
-            // move to front for future queries
-            stb__spanlist_unlink(p);
-            stb__spanlist_add(s, p);
-            return p;
-         }
-   }
-   // no non-empty ones, so allocate a new one
-   p = stb__alloc_span(stb__pages_for_class[c]);
-   if (!p) return NULL;
-   // create the free list up front
-   size = stb__size_for_class[c];
-   tsize = stb__pages_for_class[c] << stb__page_shift;
-   i = 0;
-   z = (char *) stb__page_address(p->start);
-   q = NULL;
-   while (i + size <= tsize) {
-      * (void **) z = q; q = z;
-      z += size;
-      i += size;
-   }
-   p->first_free = q;
-   p->allocations = 0;
-   stb__spanlist_add(s,p);
-   return p;
-}
-
-static int stb__sizeclass(size_t sz)
-{
-   int z = stb_log2_floor(sz); // -1 below to group e.g. 13,14,15,16 correctly
-   return stb__class_base[z] + ((sz-1) >> stb__class_shift[z]);
-}
-
-static void stb__init_sizeclass(void)
-{
-   int i, size, overhead;
-   int align_shift = 2;  // allow 4-byte and 12-byte blocks as well, vs. TCMalloc
-   int next_class = 1;
-   int last_log = 0;
-
-   for (i = 0; i < align_shift; i++) {
-      stb__class_base [i] = next_class;
-      stb__class_shift[i] = align_shift;
-   }
-
-   for (size = 1 << align_shift; size <= STB__MAX_SMALL_SIZE; size += 1 << align_shift) {
-      i = stb_log2_floor(size);
-      if (i > last_log) {
-         if (size == 16) ++align_shift; // switch from 4-byte to 8-byte alignment
-         else if (size >= 128 && align_shift < 8) ++align_shift;
-         stb__class_base[i]  = next_class - ((size-1) >> align_shift);
-         stb__class_shift[i] = align_shift;
-         last_log = i;
-      }
-      stb__size_for_class[next_class++] = size;
-   }
-
-   for (i=1; i <= STB__MAX_SMALL_SIZE; ++i)
-      assert(i <= stb__size_for_class[stb__sizeclass(i)]);
-
-   overhead = 0;
-   for (i = 1; i < next_class; i++) {
-      int s = stb__size_for_class[i];
-      size = stb__page_size;
-      while (size % s > size >> 3)
-         size += stb__page_size;
-      stb__pages_for_class[i] = (unsigned char) (size >> stb__page_shift);
-      overhead += size;
-   }
-   assert(overhead < (4 << 20)); // make sure it's under 4MB of overhead
-}
-
-#ifdef STB_DEBUG
-#define stb__smemset(a,b,c)  memset((void *) a, b, c)
-#elif defined(STB_FASTMALLOC_INIT)
-#define stb__smemset(a,b,c)  memset((void *) a, b, c)
-#else
-#define stb__smemset(a,b,c)
-#endif
-void *stb_smalloc(size_t sz)
-{
-   stb__span *s;
-   if (sz == 0) return NULL;
-   if (stb__size_for_class[1] == 0) stb__init_sizeclass();
-   if (sz > STB__MAX_SMALL_SIZE) {
-      s = stb__alloc_span((sz + stb__page_size - 1) >> stb__page_shift);
-      if (s == NULL) return NULL;
-      s->list = 0;
-      s->next = s->prev = NULL;
-      s->allocations = -32767;
-      stb__smemset(stb__page_address(s->start), 0xcd, (sz+3)&~3);
-      return (void *) stb__page_address(s->start);
-   } else {
-      void *p;
-      int c = stb__sizeclass(sz);
-      s = stb__spanlist[256+c];
-      if (!s || !s->first_free)
-         s = stb__get_nonempty_sizeclass(c);
-      if (s == NULL) return NULL;
-      p = s->first_free;
-      s->first_free = * (void **) p;
-      ++s->allocations;
-      stb__smemset(p,0xcd, sz);
-      return p;
-   }
-}
-
-int stb_ssize(void *p)
-{
-   stb__span *s;
-   if (p == NULL) return 0;
-   s = stb__span_for_page[stb__page_number((stb_uint) p) - stb__firstpage];
-   if (s->list >= 256) {
-      return stb__size_for_class[s->list - 256];
-   } else {
-      assert(s->list == 0);
-      return s->len << stb__page_shift;
-   }
-}
-
-void stb_sfree(void *p)
-{
-   stb__span *s;
-   if (p == NULL) return;
-   s = stb__span_for_page[stb__page_number((stb_uint) p) - stb__firstpage];
-   if (s->list >= 256) {
-      stb__smemset(p, 0xfe, stb__size_for_class[s->list-256]);
-      * (void **) p = s->first_free;
-      s->first_free = p;
-      if (--s->allocations == 0) {
-         stb__spanlist_unlink(s);
-         stb__free_span(s);
-      }
-   } else {
-      assert(s->list == 0);
-      stb__smemset(p, 0xfe, stb_ssize(p));
-      stb__free_span(s);
-   }
-}
-
-void *stb_srealloc(void *p, size_t sz)
-{
-   size_t cur_size;
-   if (p == NULL) return stb_smalloc(sz);
-   if (sz == 0) { stb_sfree(p); return NULL; }
-   cur_size = stb_ssize(p);
-   if (sz > cur_size || sz <= (cur_size >> 1)) {
-      void *q;
-      if (sz > cur_size && sz < (cur_size << 1)) sz = cur_size << 1;
-      q = stb_smalloc(sz); if (q == NULL) return NULL;
-      memcpy(q, p, sz < cur_size ? sz : cur_size);
-      stb_sfree(p);
-      return q;
-   }
-   return p;
-}
-
-void *stb_scalloc(size_t n, size_t sz)
-{
-   void *p;
-   if (n == 0 || sz == 0) return NULL;
-   if (stb_log2_ceil(n) + stb_log2_ceil(n) >= 32) return NULL;
-   p = stb_smalloc(n*sz);
-   if (p) memset(p, 0, n*sz);
-   return p;
-}
-
-char *stb_sstrdup(char *s)
-{
-   int n = strlen(s);
-   char *p = (char *) stb_smalloc(n+1);
-   if (p) strcpy(p,s);
-   return p;
-}
-#endif // STB_DEFINE
 
 
 #undef STB_EXTERN
