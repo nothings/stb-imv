@@ -116,11 +116,9 @@ HWND  win;
 void platformDrawBitmap(HDC hdc, int x, int y, unsigned char *bits, int w, int h, int stride, int dim)
 {
    int i;
-   BITMAPINFOHEADER b;
+   BITMAPINFOHEADER b = { sizeof(b) };
    int result;
 
-   memset(&b, 0, sizeof(b));
-   b.biSize = sizeof(b);
    b.biPlanes=1;
    b.biBitCount=BPP*8;
    b.biWidth = stride/BPP;
@@ -628,8 +626,7 @@ int label_font_height=12;
 // build the font for the filename label
 void build_label_font(void)
 {
-   LOGFONT lf;
-   memset(&lf, 0, sizeof(lf));
+   LOGFONT lf = {0};
    lf.lfHeight       = label_font_height;
    lf.lfOutPrecision = OUT_TT_PRECIS; // prefer truetype to raster fonts
    strcpy(lf.lfFaceName, "Times New Roman");
@@ -1382,9 +1379,7 @@ static char filenamebuffer[4096];
 
 void open_file(void)
 {
-   OPENFILENAME o;
-   memset(&o, 0, sizeof(o));
-   o.lStructSize = sizeof(o);
+   OPENFILENAME o = { sizeof(o) };
    o.lpstrFilter = open_filter;
    o.lpstrFile = filenamebuffer;
    filenamebuffer[0] = 0;
@@ -2140,7 +2135,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
    MEMORYSTATUS mem;
    MSG          msg;
-   WNDCLASSEX   wndclass;
+   WNDCLASSEX   wndclass = { sizeof(wndclass) };
    HWND         hWnd;
 
    // initial loaded image
@@ -2177,8 +2172,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    assert(helptext_center[sizeof(helptext_center)-1]==0);
 
    // create the main window class
-   memset(&wndclass, 0, sizeof(wndclass));
-   wndclass.cbSize        = sizeof(wndclass);
    wndclass.style         = CS_OWNDC | CS_DBLCLKS;
    wndclass.lpfnWndProc   = (WNDPROC)MainWndProc;
    wndclass.hInstance     = hInstance;
@@ -2204,9 +2197,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
    if (argc < 1) {
       // if run with no arguments, get an initial filename
-      OPENFILENAME o;
-      memset(&o, 0, sizeof(o));
-      o.lStructSize = sizeof(o);
+      OPENFILENAME o = { sizeof(o) };
       o.lpstrFilter = open_filter;
       o.lpstrFile = filenamebuffer;
       filenamebuffer[0] = 0;
@@ -2255,8 +2246,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    // allocate semaphores / mutexes
    cache_mutex  = stb_mutex_new();
    decode_mutex = stb_mutex_new();
-   decode_queue       = stb_sem_new(1,1);
-   disk_command_queue = stb_sem_new(1,1);
+   decode_queue       = stb_sem_new(1);
+   disk_command_queue = stb_sem_new(1);
    resize_merge = stb_sync_new();
 
    // go ahead and start the other tasks
@@ -3167,18 +3158,20 @@ static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, int *n
    uint8 *res = NULL;
    imv_failure_string = NULL;
 
+   res = stbi_load_from_memory(mem, len, x, y, n, n_req);
+   if (res) return res;
+   imv_failure_string = stbi_failure_reason();
+
 #ifdef USE_FREEIMAGE
    if (!only_stbi) {
-      if (res == NULL && FreeImagePresent) {
+      if (FreeImagePresent) {
          FIMEMORY *fi = FreeImage_OpenMemory(mem,len);
          res = LoadImageWithFreeImage(fi, x, y, n, n_req);
          FreeImage_CloseMemory(fi);
+         // if no error message is generated, because it's not a known type,
+         // we'll get the unknown-type message from stbi_failure_reason()
       }
-      if (res) return res;
    }
 #endif
-   res = stbi_load_from_memory(mem, len, x, y, n, n_req);
-   if (res == NULL && imv_failure_string == NULL)
-      imv_failure_string = stbi_failure_reason();
    return res;
 }

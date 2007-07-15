@@ -5,14 +5,14 @@
     * feature: use FreeImage.dll if it's available
     * bugfix: fix bug in right or bottom cursor region due to internal cleanup
 
-  Version 0.93: Beta 4
+  Version 0.93: Beta 4 (2007-07-10)
     * bugfix: alter stb_image to support jpegs with weird header blocks
     * bugfix: exit after printing directory error message
     * bugfix: change naming of frame/border variables
     * bugfix: ESC when showing help clears help, rather than exiting
     * internal: clean up registry code to halve registry ops
 
-  Version 0.92: Beta 3
+  Version 0.92: Beta 3 (2007-07-03)
     * internal: replace Sleep()-based thread-joining code with synchronization primitive
     * internal: change work queue internals to use stb_mutex
     * internal: change stb_mutex from using win32 semaphore to using CRITICAL_SECTION
