@@ -547,6 +547,15 @@ int show_help=0;
 int downsample_cubic = 0;
 int upsample_cubic = TRUE;
 
+int cur_loc = -1; // offset within the current list of files
+
+// information about files we have currently loaded
+struct
+{
+   char *filename;
+   int lru;
+} *fileinfo;
+
 // declare with extra bytes so we can print the version number into it
 char helptext_center[140] =
    "imv(stb)\n"
@@ -557,19 +566,16 @@ char helptext_center[140] =
 
 char helptext_left[] =
    "\n\n\n\n\n\n"
-   "       ESC: exit\n"
    " ALT-ENTER: toggle size\n"
    " CTRL-PLUS: zoom in\n"
    "CTRL-MINUS: zoom out\n"
    "RIGHT, SPACE: next image\n"
    "LEFT, BACKSPACE: previous image\n"
-   "  (CTRL-) O: open image\n"
-   "       P: change preferences\n"
+   "      O: open image\n"
    "      B: toggle border\n"
    "SHIFT-B: toggle border but keep stripe\n"
    " CTRL-B: toggle white stripe in border\n"
    "     L: toggle filename label\n"
-   "F1, H, ?: help"
 ;
 
 char helptext_right[] =
@@ -580,6 +586,10 @@ char helptext_right[] =
    "double-click to toggle size\n"
    "mousewheel to zoom\n"
    "\n"
+   "F1, H, ?: help\n"
+   "ESC: exit\n"
+   "P: change preferences\n"
+   "CTRL-C: copy filename to clipboard\n"
 ;
 
 // draw the help text semi-prettily
@@ -685,7 +695,13 @@ void display(HWND win, HDC hdc)
       SIZE size;
       RECT z;
       HFONT old = NULL;
+      char buffer[1024];
       char *name = cur_filename ? cur_filename : "(none)";
+      if (fileinfo) {
+         sprintf(buffer, "%s ( %d / %d )", name, cur_loc+1, stb_arr_len(fileinfo));
+         name = buffer;
+      }
+
       if (label_font) old = SelectObject(hdc, label_font);
 
       // get rect around label so we can draw it ourselves, because
@@ -1079,14 +1095,6 @@ void toggle_display(void)
 // before they're flushed, it will still be valid
 char path_to_file[4096];
 char *filename;   // @TODO: gah, we have cur_filename AND filename. and filename is being set dumbly!
-int cur_loc = -1; // offset within the current list of files
-
-// information about files we have currently loaded
-struct
-{
-   char *filename;
-   int lru;
-} *fileinfo;
 
 // stb_sdict is a string dictionary (strings as keys, void * as values)
 // dictionary mapping filenames (key) to cached images (ImageFile *)
@@ -1103,6 +1111,102 @@ void free_fileinfo(void)
       free(fileinfo[i].filename); // allocated by stb_readdir
    stb_arr_free(fileinfo);
    fileinfo = NULL;
+}
+
+//derived from michael herf's code: http://www.stereopsis.com/strcmp4humans.html
+
+// sorts like this:
+//     foo.jpg
+//     foo1.jpg
+//     foo2.jpg
+//     foo10.jpg
+//     foo_1.jpg
+//     food.jpg
+
+// use upper, not lower, to get better sorting versus '_'
+__forceinline char tupper(char b)
+{
+	//if (b >= 'A' && b <= 'Z') return b - 'A' + 'a';
+	if (b >= 'a' && b <= 'z') return b - 'a' + 'A';
+	return b;
+}
+
+__forceinline char isnum(char b)
+{
+	if (b >= '0' && b <= '9') return 1;
+	return 0;
+}
+
+__forceinline int parsenum(char **a_p)
+{
+   char *a = *a_p;
+	int result = *a - '0';
+	++a;
+
+	while (isnum(*a)) {
+		result *= 10;
+		result += *a - '0';
+		++a;
+	}
+
+	*a_p = a-1;
+	return result;
+}
+
+int StringCompare(char *a, char *b)
+{
+   char *orig_a = a, *orig_b = b;
+
+	if (a == b) return 0;
+
+	if (a == NULL) return -1;
+	if (b == NULL) return 1;
+
+	while (*a && *b) {
+
+		int a0, b0;	// will contain either a number or a letter
+
+      if (isnum(*a) && isnum(*b)) {
+			a0 = parsenum(&a);
+			b0 = parsenum(&b);
+      } else {
+         // if they are mixed number and character, use ASCII comparison
+         // order between them (number before character), not herf's
+         // approach (numbers after everything else). this produces the order:
+         //     foo.jpg
+         //     foo1.jpg
+         //     food.jpg
+         //     foo_.jpg
+         // which I think looks better than having foo_ before food (but
+         // I could be wrong, given how a blank space sorts)
+
+			a0 = tupper(*a);
+			b0 = tupper(*b);
+		}
+
+		if (a0 < b0) return -1;
+		if (a0 > b0) return 1;
+
+		++a;
+		++b;
+	}
+
+	if (*a) return 1;
+	if (*b) return -1;
+
+	{
+      // if strings differ only by leading 0s, use case-insensitive ASCII sort
+      // (note, we should work this out more efficiently by noticing which one changes length first)
+      int z = stricmp(orig_a, orig_b);
+      if (z) return z;
+      // if identical case-insensitive, return ASCII sort
+      return strcmp(orig_a, orig_b);
+   }
+}
+
+int StringCompareSort(const void *p, const void *q)
+{
+   return StringCompare(*(char **) p, *(char **) q);
 }
 
 char *open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp\0";
@@ -1122,6 +1226,7 @@ void init_filelist(void)
 
    image_files = stb_readdir_files_mask(path_to_file, open_filter + 12);
    if (image_files == NULL) { error("Error: couldn't read directory."); exit(0); }
+   qsort(image_files, stb_arr_len(image_files), sizeof(*image_files), StringCompareSort);
 
    // given the array of filenames, build an equivalent fileinfo array
    stb_arr_setlen(fileinfo, stb_arr_len(image_files));
@@ -2068,6 +2173,21 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                if (cur) frame(cur);
                break;
 
+            case 'C' | MY_CTRL: {
+               HGLOBAL hMem;
+               char buffer[1024], *t;
+               stb_fullpath(buffer, 1024, source_c->filename);
+               hMem = GlobalAlloc(GHND, strlen(buffer)+1);
+               t = GlobalLock(hMem);
+               strcpy(t, buffer);
+               GlobalUnlock(hMem);
+               OpenClipboard(win);
+               EmptyClipboard();
+               SetClipboardData(CF_TEXT, hMem);
+               CloseClipboard();
+               break;
+            }
+
 #ifdef PERFTEST
             case 'D' | MY_CTRL:
                performance_test();
@@ -2342,6 +2462,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
          if (pending_resize.size.w) {
             // there's a resize pending, so don't block
             if (!pending_resize.image) {
+               // @TODO: use a message instead!
                // resize isn't done, so sleep for a bit and try again
                Sleep(10);
                continue;
