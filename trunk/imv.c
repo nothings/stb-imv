@@ -52,7 +52,8 @@
 
 
 
-
+int do_show;
+int delay_time = 4000;
 
 
 // all programs get the version number from the same place: version.bat
@@ -590,6 +591,7 @@ char helptext_right[] =
    "ESC: exit\n"
    "P: change preferences\n"
    "CTRL-C: copy filename to clipboard\n"
+   "CTRL-I: launch new viewer instance\n"
 ;
 
 // draw the help text semi-prettily
@@ -775,7 +777,7 @@ typedef struct
 } Resize;
 
 // threaded image resizer, uses work queue AND current thread
-static void image_resize(Image *dest, Image *src);
+void image_resize(Image *dest, Image *src);
 
 // wrapper for image_resize() to be called via work queue
 void * work_resize(void *p)
@@ -862,8 +864,7 @@ void enqueue_resize(int left, int top, int width, int height)
       // if we have a current image, and that image can satisfy the request (they're
       // dragging one side of the image out wider), just immediately update the window
       qs.w = 0; // clear the queue
-      if (!show_frame)
-         left += FRAME, top += FRAME, width -= 2*FRAME, height -= 2*FRAME;
+      if (!show_frame) left += FRAME, top += FRAME, width -= 2*FRAME, height -= 2*FRAME;
       MoveWindow(win, left, top, width, height, TRUE);
       InvalidateRect(win, NULL, FALSE);
    } else {
@@ -1473,6 +1474,9 @@ void advance(int dir)
    for (i=0; i < MAX_CACHED_IMAGES; ++i)
       if (cache[i].lru < lru_stamp-1)
          cache[i].bail = 1;
+
+   if (do_show)
+      SetTimer(win, 0, delay_time, NULL);
 }
 
 // ctrl-O, or initial command if no filename: run
@@ -1524,7 +1528,7 @@ void resize(int step)
       // first characterize the current size relative to the raw size
       // we do this by linearly probing possible values for zoom
       // @TODO: refactor to combine these loops
-      if (cur->x > source->x + FRAME*2 || cur->y > source->y + FRAME*2) {
+      if (cur->x > x + FRAME*2 || cur->y > y + FRAME*2) {
          for(;;) {
             s = (float) pow(2, zoom/2.0f + 0.25f);
             x2 = int(x*s);
@@ -1694,7 +1698,6 @@ void mouse(UINT ev, int x, int y)
                MoveWindow(win, rect.left + x-ex, rect.top + y-ey, rect.right - rect.left, rect.bottom - rect.top, TRUE);
                break;
             }
-
 
             case MODE_resize: {
                RECT rect;
@@ -2099,6 +2102,12 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          return 0;
       }
 
+      case WM_TIMER: {
+         advance(1);
+         return 0;
+         break;
+      }
+
       #define MY_SHIFT (1 << 16)
       #define MY_CTRL  (1 << 17)
       #define MY_ALT   (1 << 18)
@@ -2127,6 +2136,14 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             case 'l': case 'L':
                show_label = !show_label;
                InvalidateRect(win, NULL, FALSE);
+               break;
+
+            case 'S':
+               do_show = !do_show;
+               if (do_show)
+                  SetTimer(win,0,delay_time,NULL);
+               else
+                  KillTimer(win,0);
                break;
 
             default:
@@ -2160,6 +2177,20 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                InvalidateRect(win, NULL, FALSE);
                break;
 
+#ifdef MONO_THUMB
+            case 'T' | MY_CTRL | MY_ALT | MY_SHIFT:
+            {
+               extern Image *make_mono_thumb(Image *src);
+               while (pending_resize.size.w && !pending_resize.image)
+                  Sleep(10);
+               source = make_mono_thumb(source);
+               imfree(source_c->image);
+               source_c->image = source;
+               size_to_current(FALSE);
+               break;
+            }
+#endif
+
             case 'B' | MY_CTRL:
                extra_border = !extra_border;
                if (cur) frame(cur);
@@ -2188,6 +2219,28 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                EmptyClipboard();
                SetClipboardData(CF_TEXT, hMem);
                CloseClipboard();
+               break;
+            }
+
+            case 'I' | MY_CTRL: {
+               // not sure which of these is smaller
+               #if 0
+                  char buffer[MAX_PATH+1024];
+                  PROCESS_INFORMATION pi={0};
+                  STARTUPINFO si={0};
+                  buffer[0] = '"';
+                  GetModuleFileName(NULL, buffer+1, MAX_PATH);
+                  strcat(buffer, "\" \"");
+                  stb_fullpath(buffer+strlen(buffer), 1020, source_c->filename);
+                  strcat(filename, "\"");
+                  CreateProcess(NULL, buffer, NULL, NULL, FALSE, DETACHED_PROCESS, NULL, NULL, &si, &pi);
+               #else
+                  char buffer[MAX_PATH],filename[1024] = {'\"'};
+                  GetModuleFileName(NULL, buffer, sizeof(buffer));
+                  stb_fullpath(filename+1, sizeof(filename)-2, source_c->filename);
+                  strcat(filename, "\"");
+                  _spawnl(_P_NOWAIT, buffer, buffer, filename, NULL);
+               #endif
                break;
             }
 
@@ -2266,6 +2319,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    unsigned char *image_data;
 
    inst = hInstance;
+
+#ifdef _DEBUG
+{
+char buffer[1024];
+FILE *f = fopen("c:/x/cmdline.txt", "ab");
+sprintf(buffer, "%s\n\nx\n", lpCmdLine);
+fwrite(buffer, 1, strlen(buffer), f);
+fclose(f);
+}
+#endif
 
    // determine the number of threads to use in the resizer
    resize_threads = stb_min(stb_processor_count(), 16);
@@ -2445,6 +2508,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             // is the image we're showing the image to resize, and does the size match?
             if (cur_is_current() && (!cur || (qs.w == cur->x && qs.h >= cur->y) || (qs.h == cur->y && qs.w >= cur->x))) {
                // no resize necessary, just a variant of the current shape
+               if (!show_frame) qs.x += FRAME, qs.y += FRAME, qs.w -= 2*FRAME, qs.h -= 2*FRAME;
                MoveWindow(win, qs.x,qs.y,qs.w,qs.h, TRUE);
                InvalidateRect(win, NULL, FALSE);
             } else {
@@ -2496,7 +2560,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                }
 
                // resize the window
-               SetWindowPos(hWnd,NULL,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, SWP_NOZORDER);
+               SetWindowPos(hWnd,NULL,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, SWP_NOZORDER|SWP_NOCOPYBITS);
+               //MoveWindow(hWnd,pending_resize.size.x, pending_resize.size.y, pending_resize.size.w, pending_resize.size.h, FALSE);
 
                // clear the resize request info
                barrier();
