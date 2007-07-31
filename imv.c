@@ -41,7 +41,7 @@ typedef int Bool;
 // general configuration options
 
 #define USE_GDIPLUS
-#define USE_FREEIMAGE
+//#define USE_FREEIMAGE
 
 // size of border in pixels
 #define FRAME   3
@@ -3360,16 +3360,15 @@ static Bool LoadGdiplus(void)
    GdipBitmapLockBits = (GdipBitmapLockBitsProc)GpFunc("GdipBitmapLockBits");
    GdipBitmapUnlockBits = (GdipBitmapUnlockBitsProc)GpFunc("GdipBitmapUnlockBits");
    if (!GdiplusPresent) {
-      if (!only_stbi) {
+      if (!only_stbi)
          error("Invalid GdiPlus.dll; disabling GDI+ support.");
-      } else {
-         ULONG token;
-         GdiplusStartupInput gpStartupInput = { 1, NULL, FALSE, FALSE };
-         if (GdiplusStartup(&token, &gpStartupInput, &gpStartupOutput) != GpOk) {
-            GdiplusPresent = FALSE;
-            if (!only_stbi)
-               error("Failed to initialize GdiPlus.dll; disabling GDI+ support.");
-         }
+   } else {
+      ULONG token;
+      GdiplusStartupInput gpStartupInput = { 1, NULL, FALSE, FALSE };
+      if (GdiplusStartup(&token, &gpStartupInput, &gpStartupOutput) != GpOk) {
+         GdiplusPresent = FALSE;
+         if (!only_stbi)
+            error("Failed to initialize GdiPlus.dll; disabling GDI+ support.");
       }
    }
 
