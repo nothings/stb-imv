@@ -36,9 +36,11 @@
 
 #include "resource.h"
 
+typedef int Bool;
 
 // general configuration options
 
+#define USE_GDIPLUS
 #define USE_FREEIMAGE
 
 // size of border in pixels
@@ -322,7 +324,7 @@ static unsigned char alpha_background[2][3] =
 
 // given raw decoded data from stbi_load, make it into a proper Image (e.g. creating a
 // windows-compatible bitmap with 4-byte aligned rows and BGR color order)
-void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image_n)
+void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL image_loaded_as_rgb, int image_n)
 {
    int i,j,k=0;
    z->pixels = image_data;
@@ -334,10 +336,13 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, int image
 
    for (j=0; j < image_y; ++j) {
       for (i=0; i < image_x; ++i) {
-         // swap RGB to BGR
-         unsigned char t = image_data[k+0];
-         image_data[k+0] = image_data[k+2];
-         image_data[k+2] = t;
+         // TODO: hoist branches outside of loops?
+         if (image_loaded_as_rgb) {
+            // swap RGB to BGR
+            unsigned char t = image_data[k+0];
+            image_data[k+0] = image_data[k+2];
+            image_data[k+2] = t;
+         }
 
          #if BPP==4
          // if image had an alpha channel, pre-blend with background
@@ -418,7 +423,7 @@ start:
    return best;
 }
 
-static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, int *n, int n_req);
+static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, BOOL *loaded_as_rgb, int *n, int n_req);
 static char  *imv_failure_reason(void);
 
 void *decode_task(void *p)
@@ -434,13 +439,13 @@ void *decode_task(void *p)
          stb_sem_waitfor(decode_queue);
          o(("DECODE: woken\n"));
       } else {
-         int x,y,n;
+         int x,y,loaded_as_rgb,n;
          uint8 *data;
          assert(f->status == LOAD_decoding);
 
          // decode image
          o(("DECIDE: decoding %s\n", f->filename));
-         data = imv_decode_from_memory(f->filedata, f->len, &x, &y, &n, BPP);
+         data = imv_decode_from_memory(f->filedata, f->len, &x, &y, &loaded_as_rgb, &n, BPP);
          o(("DECODE: decoded %s\n", f->filename));
 
          // free copy of data from disk, which we don't need anymore
@@ -457,7 +462,7 @@ void *decode_task(void *p)
          } else {
             // post-process the image into the right format
             f->image = (Image *) malloc(sizeof(*f->image));
-            make_image(f->image, x,y,data,n);
+            make_image(f->image, x, y,data, loaded_as_rgb, n);
             barrier();
             f->status = LOAD_available;
 
@@ -558,7 +563,7 @@ struct
 } *fileinfo;
 
 // declare with extra bytes so we can print the version number into it
-char helptext_center[140] =
+char helptext_center[150] =
    "imv(stb)\n"
    "Copyright 2007 Sean Barrett\n"
    "http://code.google.com/p/stb-imv\n"
@@ -566,7 +571,7 @@ char helptext_center[140] =
 ;
 
 char helptext_left[] =
-   "\n\n\n\n\n\n"
+   "\n\n\n\n\n\n\n"
    " ALT-ENTER: toggle size\n"
    " CTRL-PLUS: zoom in\n"
    "CTRL-MINUS: zoom out\n"
@@ -2298,6 +2303,14 @@ int cur_is_current(void)
    return !strcmp(cur_filename, source_c->filename);
 }
 
+#ifdef USE_GDIPLUS
+static Bool GdiplusPresent;
+static Bool LoadGdiplus(void);
+#define ICM_SUFFIX ""
+// use this definition to enable color management
+//#define ICM_SUFFIX "ICM"
+#endif
+
 #ifdef USE_FREEIMAGE
 static int FreeImagePresent;
 static int LoadFreeImage(void);
@@ -2315,20 +2328,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    HWND         hWnd;
 
    // initial loaded image
-   int image_x, image_y, image_n;
+   int image_x, image_y, image_loaded_as_rgb, image_n;
    unsigned char *image_data;
 
    inst = hInstance;
-
-#ifdef _DEBUG
-{
-char buffer[1024];
-FILE *f = fopen("c:/x/cmdline.txt", "ab");
-sprintf(buffer, "%s\n\nx\n", lpCmdLine);
-fwrite(buffer, 1, strlen(buffer), f);
-fclose(f);
-}
-#endif
 
    // determine the number of threads to use in the resizer
    resize_threads = stb_min(stb_processor_count(), 16);
@@ -2346,6 +2349,13 @@ fclose(f);
    // concatenate the version number onto the help text, because
    // we can't do this statically with the current build process
    strcat(helptext_center, VERSION);
+
+#ifdef USE_GDIPLUS
+   if (LoadGdiplus()) {
+       strcat(helptext_center, "\nUsing GDI+");
+       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.ico;*.jng;*.tiff\0";
+   }
+#endif
 
    // now try to LoadFreeImage _after_ we've already loaded the prefs;
    // that way only_stbi can be used to suppress errors
@@ -2408,7 +2418,7 @@ fclose(f);
       if (!data)
          why = "Couldn't open file";
       else {
-         image_data = imv_decode_from_memory(data, len, &image_x, &image_y, &image_n, BPP);
+         image_data = imv_decode_from_memory(data, len, &image_x, &image_y, &image_loaded_as_rgb, &image_n, BPP);
          if (image_data == NULL)
             why = imv_failure_reason();
       }
@@ -2443,7 +2453,7 @@ fclose(f);
    // create the source image by converting the image data to BGR,
    // pre-blending alpha
    source = malloc(sizeof(*source));
-   make_image(source, image_x, image_y, image_data, image_n);
+   make_image(source, image_x, image_y, image_data, image_loaded_as_rgb, image_n);
 
    // create a cache entry in case they start browsing later
    cache[0].status = LOAD_available;
@@ -3201,6 +3211,232 @@ static char  *imv_failure_reason(void)
    return imv_failure_string;
 }
 
+#ifdef USE_GDIPLUS
+
+#pragma pack(push,8)
+
+// from GdiplusTypes.h
+
+typedef enum
+{
+   GpOk = 0,
+   GpGenericError = 1,
+   GpInvalidParameter = 2,
+   GpOutOfMemory = 3,
+   GpObjectBusy = 4,
+   GpInsufficientBuffer = 5,
+   GpNotImplemented = 6,
+   GpWin32Error = 7,
+   GpWrongState = 8,
+   GpAborted = 9,
+   GpFileNotFound = 10,
+   GpValueOverflow = 11,
+   GpAccessDenied = 12,
+   GpUnknownImageFormat = 13,
+   GpFontFamilyNotFound = 14,
+   GpFontStyleNotFound = 15,
+   GpNotTrueTypeFont = 16,
+   GpUnsupportedGdiplusVersion = 17,
+   GpGdiplusNotInitialized = 18,
+   GpPropertyNotFound = 19,
+   GpPropertyNotSupported = 20
+} GpStatus;
+
+// from GdiplusInit.h
+
+typedef enum
+{
+   DebugEventLevelFatal,
+   DebugEventLevelWarning
+} GpDebugEventLevel;
+
+//typedef void (*MyFunc)(int fif, const char *msg);
+
+typedef VOID (WINAPI *GpDebugEventProc)(GpDebugEventLevel level, CHAR *message);
+
+typedef ULONG * ULONG_PTR;
+typedef GpStatus (WINAPI *GpNotificationHookProc)(ULONG_PTR *token);
+typedef VOID (WINAPI *GpNotificationUnhookProc)(ULONG_PTR token);
+
+typedef struct {
+   UINT32 GdiplusVersion;
+   GpDebugEventProc DebugEventCallback;
+   BOOL SuppressBackgroundThread; // TODO: manually call hook/unhook
+   BOOL SuppressExternalCodecs;
+} GdiplusStartupInput;
+
+typedef struct {
+   GpNotificationHookProc NoticationHook;
+   GpNotificationUnhookProc NotificatoinUnhook;
+} GdiplusStartupOutput;
+
+static HINSTANCE GdiplusDLL;
+static GdiplusStartupOutput gpStartupOutput;
+
+typedef __declspec(dllimport) GpStatus (WINAPI *GdiplusStartupProc)(ULONG* token, const GdiplusStartupInput* input, GdiplusStartupOutput* output);
+static GdiplusStartupProc GdiplusStartup;
+
+// from GdiplusHeaders.h
+typedef void GpImage; // opaque type
+
+typedef struct { 
+   GpImage* nativeImage;
+   GpStatus lastResult;
+   GpStatus loadStatus;
+} GpBitmap;
+
+// from GdiplusTypes.h
+typedef struct {
+   INT X;
+   INT Y;
+   INT Width;
+   INT Height;
+} GpRect;
+
+// from GdiplusPixelFormat.h
+typedef INT GpPixelFormat;
+// In-memory pixel data formats:
+// bits 0-7 = format index
+// bits 8-15 = pixel size (in bits)
+// bits 16-23 = flags
+// bits 24-31 = reserved
+#define GpPixelFormatGDI       0x00020000 // Is a GDI-supported format
+#define GpPixelFormatAlpha     0x00040000 // Has an alpha component
+#define GpPixelFormatCanonical 0x00200000 
+#define GpPixelFormat24bppRGB  (8  | (24 << 8) | GpPixelFormatGDI)
+#define GpPixelFormat32bppARGB (10 | (32 << 8) | GpPixelFormatAlpha | GpPixelFormatGDI | GpPixelFormatCanonical)
+
+// from GdiplusImaging.h
+typedef struct {
+   UINT Width;
+   UINT Height;
+   INT Stride;
+   GpPixelFormat PixelFormat;
+   VOID* Scan0;
+   UINT_PTR Reserved;
+} GpBitmapData;
+
+typedef enum
+{
+   GpImageLockModeRead        = 0x0001,
+   GpImageLockModeWrite       = 0x0002,
+   GpImageLockModeUserInputBuf= 0x0004
+} GpImageLockMode;
+
+typedef __declspec(dllimport) GpStatus (WINAPI *GdipCreateBitmapFromStreamProc)(IStream* stream, GpBitmap **bitmap);
+static GdipCreateBitmapFromStreamProc GdipCreateBitmapFromStream;
+
+typedef __declspec(dllimport) GpStatus (WINAPI *GdipDisposeImageProc)(GpImage *image);
+static GdipDisposeImageProc GdipDisposeImage;
+
+typedef __declspec(dllimport) GpStatus (WINAPI *GdipBitmapLockBitsProc)(GpBitmap* bitmap, const GpRect* rect, GpImageLockMode flags, GpPixelFormat format, GpBitmapData* lockedBitmapData);
+static GdipBitmapLockBitsProc GdipBitmapLockBits;
+
+typedef __declspec(dllimport) GpStatus (WINAPI *GdipBitmapUnlockBitsProc)(GpBitmap* bitmap, GpBitmapData* lockedBitmapData);
+static GdipBitmapUnlockBitsProc GdipBitmapUnlockBits;
+
+FARPROC GpFunc(char *str)
+{
+   FARPROC p = GetProcAddress(GdiplusDLL, str);
+   if (p == NULL)
+      GdiplusPresent = FALSE; // if something doesn't load, bail!
+   return p;
+}
+
+static Bool LoadGdiplus(void)
+{
+   static Bool InitializationAttempted = FALSE;
+   if (InitializationAttempted)
+      return GdiplusPresent;
+
+   InitializationAttempted = TRUE;
+   GdiplusPresent = FALSE;
+   GdiplusDLL = LoadLibrary("gdiplus.dll");
+   if (!GdiplusDLL)
+      return GdiplusPresent;
+
+   GdiplusPresent = TRUE;
+   GdiplusStartup = (GdiplusStartupProc)GpFunc("GdiplusStartup");
+   GdipCreateBitmapFromStream = (GdipCreateBitmapFromStreamProc)GpFunc("GdipCreateBitmapFromStream" ICM_SUFFIX);
+   GdipDisposeImage = (GdipDisposeImageProc)GpFunc("GdipDisposeImage");
+   GdipBitmapLockBits = (GdipBitmapLockBitsProc)GpFunc("GdipBitmapLockBits");
+   GdipBitmapUnlockBits = (GdipBitmapUnlockBitsProc)GpFunc("GdipBitmapUnlockBits");
+   if (!GdiplusPresent) {
+      if (!only_stbi) {
+         error("Invalid GdiPlus.dll; disabling GDI+ support.");
+      } else {
+         ULONG token;
+         GdiplusStartupInput gpStartupInput = { 1, NULL, FALSE, FALSE };
+         if (GdiplusStartup(&token, &gpStartupInput, &gpStartupOutput) != GpOk) {
+            GdiplusPresent = FALSE;
+            if (!only_stbi)
+               error("Failed to initialize GdiPlus.dll; disabling GDI+ support.");
+         }
+      }
+   }
+
+   return GdiplusPresent;
+}
+
+static uint8 *LoadImageWithGdiplus(uint8 *mem, int len, int *x, int *y, int *n, int n_req) {
+   // TODO: implement an IStream that does this in-place, to avoid the copy and allocations
+   IStream* stream;
+   GpBitmap* bitmap;
+   GpBitmapData data;
+   HGLOBAL hmem;
+   GpPixelFormat pixelFormat;
+   size_t i, image_sz;
+   uint8* buf, *ret = NULL;
+   image_sz = 0;
+   *x = 0;
+   *y = 0;
+   *n = n_req;
+   bitmap = NULL;
+   data.Scan0 = NULL;
+
+   hmem = GlobalAlloc(GMEM_MOVEABLE, len);
+   if (!hmem)
+      goto liwgExit;
+
+   buf = GlobalLock(hmem);
+   if (!buf)
+      goto liwgExit;
+   memcpy(buf, mem, len);
+   if (CreateStreamOnHGlobal(buf, FALSE, &stream) != S_OK)
+      goto liwgExit;
+
+   if (GdipCreateBitmapFromStream(stream, &bitmap) != GpOk)
+      goto liwgExit;
+
+   if (n_req == 3)
+      pixelFormat = GpPixelFormat24bppRGB;
+   else
+      pixelFormat = GpPixelFormat32bppARGB;
+
+   if (GdipBitmapLockBits(bitmap, NULL, GpImageLockModeRead, pixelFormat, &data) != GpOk)
+      goto liwgExit;
+
+   *x = data.Width;
+   *y = data.Height;
+   *n = n_req;
+   image_sz = data.Width * data.Height * n_req;
+   ret = (uint8*)malloc(image_sz);
+   for (i=0; i<data.Height; ++i)
+      memcpy(&ret[i*data.Width*n_req], &((uint8*)data.Scan0)[i*data.Stride], data.Width*n_req);
+    
+liwgExit:
+   if (buf)        GlobalUnlock(hmem);
+   if (hmem)       GlobalFree(hmem);
+   if (data.Scan0) GdipBitmapUnlockBits(bitmap, &data);
+   if (bitmap)     GdipDisposeImage(bitmap);
+
+   return ret;
+}
+
+#pragma pack(pop)
+
+#endif
+
 #ifdef USE_FREEIMAGE
 
 // FreeImage types
@@ -3326,13 +3562,7 @@ uint8 *LoadImageWithFreeImage(FIMEMORY *fi, int *x, int *y, int *n, int n_req)
 
       Result = (uint8 *) malloc(Width * Height * BPP);
       if(Result) {
-         int i;
          FreeImage_ConvertToRawBits(Result, Bitmap, BPP*Width, BPP*8, 0xff0000,0x00ff00,0xff, FALSE);
-         for (i=0; i < Width*Height*BPP; i += BPP) {
-            uint8 t = Result[i];
-            Result[i] = Result[i+2];
-            Result[i+2] = t;
-         }
          *x = Width;
          *y = Height;
          *n = FreeImage_IsTransparent(Bitmap) ? 4 : 3;
@@ -3343,24 +3573,43 @@ uint8 *LoadImageWithFreeImage(FIMEMORY *fi, int *x, int *y, int *n, int n_req)
 } 
 #endif
 
-static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, int *n, int n_req)
+static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* loaded_as_rgb, int *n, int n_req)
 {
    uint8 *res = NULL;
    imv_failure_string = NULL;
 
+   // prefer STBI over everything else
+
+   *loaded_as_rgb = FALSE;
    res = stbi_load_from_memory(mem, len, x, y, n, n_req);
-   if (res) return res;
+   if (res) {
+       *loaded_as_rgb = TRUE;
+       return res;
+   }
    imv_failure_string = stbi_failure_reason();
 
+   if (only_stbi)
+      return res;
+
+   // prefer GDI+ over FreeImage
+
+#ifdef USE_GDIPLUS
+   if (GdiplusPresent) {
+       res = LoadImageWithGdiplus(mem, len, x, y, n, n_req);
+       if (res)
+           return res;
+   }
+#endif
+
+   // FreeImage is the final fallback
+
 #ifdef USE_FREEIMAGE
-   if (!only_stbi) {
-      if (FreeImagePresent) {
-         FIMEMORY *fi = FreeImage_OpenMemory(mem,len);
-         res = LoadImageWithFreeImage(fi, x, y, n, n_req);
-         FreeImage_CloseMemory(fi);
-         // if no error message is generated, because it's not a known type,
-         // we'll get the unknown-type message from stbi_failure_reason()
-      }
+   if (FreeImagePresent) {
+      FIMEMORY *fi = FreeImage_OpenMemory(mem,len);
+      res = LoadImageWithFreeImage(fi, x, y, n, n_req);
+      FreeImage_CloseMemory(fi);
+      // if no error message is generated, because it's not a known type,
+      // we'll get the unknown-type message from stbi_failure_reason()
    }
 #endif
    return res;
