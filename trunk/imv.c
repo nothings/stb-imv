@@ -3250,11 +3250,9 @@ typedef enum
    DebugEventLevelWarning
 } GpDebugEventLevel;
 
-//typedef void (*MyFunc)(int fif, const char *msg);
-
 typedef VOID (WINAPI *GpDebugEventProc)(GpDebugEventLevel level, CHAR *message);
 
-typedef ULONG * ULONG_PTR;
+typedef ULONG ULONG_PTR;
 typedef GpStatus (WINAPI *GpNotificationHookProc)(ULONG_PTR *token);
 typedef VOID (WINAPI *GpNotificationUnhookProc)(ULONG_PTR token);
 
@@ -3273,7 +3271,7 @@ typedef struct {
 static HINSTANCE GdiplusDLL;
 static GdiplusStartupOutput gpStartupOutput;
 
-typedef __declspec(dllimport) GpStatus (WINAPI *GdiplusStartupProc)(ULONG* token, const GdiplusStartupInput* input, GdiplusStartupOutput* output);
+typedef __declspec(dllimport) GpStatus (WINAPI *GdiplusStartupProc)(ULONG_PTR *token, const GdiplusStartupInput* input, GdiplusStartupOutput* output);
 static GdiplusStartupProc GdiplusStartup;
 
 // from GdiplusHeaders.h
