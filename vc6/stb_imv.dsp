@@ -129,10 +129,6 @@ SOURCE=..\imv.ico
 # End Source File
 # Begin Source File
 
-SOURCE=.\mono_thumb.c
-# End Source File
-# Begin Source File
-
 SOURCE=..\notes.txt
 
 !IF  "$(CFG)" == "stb_imv - Win32 Release"
