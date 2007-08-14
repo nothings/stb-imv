@@ -231,6 +231,26 @@ typedef struct
 // there can only be one pending command in flight
 volatile DiskCommand dc_shared;
 
+void *stb_file2(char *filename, size_t *length)
+{
+   FILE *f = fopen(filename, "rb");
+   char *buffer;
+   size_t len;
+   if (!f) return NULL;
+   len = stb_filelen(f);
+   buffer = (char *) malloc(len+2); // nul + extra
+   if (fread(buffer, 1, len, f) == len) {
+      if (length) *length = len;
+      buffer[len] = 0;
+   } else {
+      free(buffer);
+      buffer = NULL;
+   }
+   fclose(f);
+   return buffer;
+}
+
+
 // the disk loader sits in this loop forever
 void *diskload_task(void *p)
 {
@@ -1972,7 +1992,7 @@ void performance_test(void)
 {
    int t1,t2;
    int len,i;
-   uint8 *buffer = stb_file(cur_filename, &len);
+   uint8 *buffer = stb_file2(cur_filename, &len);
    if (buffer == NULL) return;
    
    t1 = timeGetTime();
@@ -2304,7 +2324,10 @@ int cur_is_current(void)
 }
 
 #ifdef USE_GDIPLUS
+typedef ULONG ULONG_PTR;
+
 static Bool GdiplusPresent;
+static ULONG_PTR GpToken;
 static Bool LoadGdiplus(void);
 #define ICM_SUFFIX ""
 // use this definition to enable color management
@@ -2414,7 +2437,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    {
       char *why=NULL;
       int len;
-      uint8 *data = stb_file(filename, &len);
+      uint8 *data = stb_file2(filename, &len);
       if (!data)
          why = "Couldn't open file";
       else {
@@ -3213,6 +3236,7 @@ static char  *imv_failure_reason(void)
 
 #ifdef USE_GDIPLUS
 
+
 #pragma pack(push,8)
 
 // from GdiplusTypes.h
@@ -3246,20 +3270,19 @@ typedef enum
 
 typedef enum
 {
-   DebugEventLevelFatal,
-   DebugEventLevelWarning
+   GpDebugEventLevelFatal,
+   GpDebugEventLevelWarning
 } GpDebugEventLevel;
 
 typedef VOID (WINAPI *GpDebugEventProc)(GpDebugEventLevel level, CHAR *message);
 
-typedef ULONG ULONG_PTR;
 typedef GpStatus (WINAPI *GpNotificationHookProc)(ULONG_PTR *token);
 typedef VOID (WINAPI *GpNotificationUnhookProc)(ULONG_PTR token);
 
 typedef struct {
    UINT32 GdiplusVersion;
    GpDebugEventProc DebugEventCallback;
-   BOOL SuppressBackgroundThread; // TODO: manually call hook/unhook
+   BOOL SuppressBackgroundThread;
    BOOL SuppressExternalCodecs;
 } GdiplusStartupInput;
 
@@ -3270,9 +3293,6 @@ typedef struct {
 
 static HINSTANCE GdiplusDLL;
 static GdiplusStartupOutput gpStartupOutput;
-
-typedef __declspec(dllimport) GpStatus (WINAPI *GdiplusStartupProc)(ULONG_PTR *token, const GdiplusStartupInput* input, GdiplusStartupOutput* output);
-static GdiplusStartupProc GdiplusStartup;
 
 // from GdiplusHeaders.h
 typedef void GpImage; // opaque type
@@ -3321,6 +3341,12 @@ typedef enum
    GpImageLockModeUserInputBuf= 0x0004
 } GpImageLockMode;
 
+typedef __declspec(dllimport) GpStatus (WINAPI *GdiplusStartupProc)(ULONG_PTR *token, const GdiplusStartupInput* input, GdiplusStartupOutput* output);
+static GdiplusStartupProc GdiplusStartup;
+
+typedef __declspec(dllimport) GpStatus (WINAPI *GdiplusShutdownProc)(ULONG_PTR token);
+static GdiplusShutdownProc GdiplusShutdown;
+
 typedef __declspec(dllimport) GpStatus (WINAPI *GdipCreateBitmapFromStreamProc)(IStream* stream, GpBitmap **bitmap);
 static GdipCreateBitmapFromStreamProc GdipCreateBitmapFromStream;
 
@@ -3332,6 +3358,8 @@ static GdipBitmapLockBitsProc GdipBitmapLockBits;
 
 typedef __declspec(dllimport) GpStatus (WINAPI *GdipBitmapUnlockBitsProc)(GpBitmap* bitmap, GpBitmapData* lockedBitmapData);
 static GdipBitmapUnlockBitsProc GdipBitmapUnlockBits;
+
+#pragma pack(pop)
 
 FARPROC GpFunc(char *str)
 {
@@ -3355,6 +3383,7 @@ static Bool LoadGdiplus(void)
 
    GdiplusPresent = TRUE;
    GdiplusStartup = (GdiplusStartupProc)GpFunc("GdiplusStartup");
+   //GdiplusShutdown = (GdiplusShutdownProc)GpFunc("GdiplusShutdown");
    GdipCreateBitmapFromStream = (GdipCreateBitmapFromStreamProc)GpFunc("GdipCreateBitmapFromStream" ICM_SUFFIX);
    GdipDisposeImage = (GdipDisposeImageProc)GpFunc("GdipDisposeImage");
    GdipBitmapLockBits = (GdipBitmapLockBitsProc)GpFunc("GdipBitmapLockBits");
@@ -3363,9 +3392,9 @@ static Bool LoadGdiplus(void)
       if (!only_stbi)
          error("Invalid GdiPlus.dll; disabling GDI+ support.");
    } else {
-      ULONG token;
-      GdiplusStartupInput gpStartupInput = { 1, NULL, FALSE, FALSE };
-      if (GdiplusStartup(&token, &gpStartupInput, &gpStartupOutput) != GpOk) {
+      // no need to use GDI+ backup thread, or to call the hook methods in gpStartupOutput
+      GdiplusStartupInput gpStartupInput = { 1, NULL, TRUE, FALSE };
+      if (GdiplusStartup(&GpToken, &gpStartupInput, &gpStartupOutput) != GpOk) {
          GdiplusPresent = FALSE;
          if (!only_stbi)
             error("Failed to initialize GdiPlus.dll; disabling GDI+ support.");
@@ -3376,39 +3405,43 @@ static Bool LoadGdiplus(void)
 }
 
 static uint8 *LoadImageWithGdiplus(uint8 *mem, int len, int *x, int *y, int *n, int n_req) {
-   // TODO: implement an IStream that does this in-place, to avoid the copy and allocations
-   IStream* stream;
-   GpBitmap* bitmap;
+   HGLOBAL hMem = NULL;
+   IStream* stream = NULL;
+   GpBitmap* bitmap = NULL;
    GpBitmapData data;
-   HGLOBAL hmem;
    GpPixelFormat pixelFormat;
-   size_t i, image_sz;
-   uint8* buf, *ret = NULL;
+   size_t i, image_sz = 0;
+   uint8 *buf = NULL, *ret = NULL;
    image_sz = 0;
    *x = 0;
    *y = 0;
    *n = n_req;
-   bitmap = NULL;
    data.Scan0 = NULL;
 
-   hmem = GlobalAlloc(GMEM_MOVEABLE, len);
-   if (!hmem)
+   hMem = GlobalAlloc(GMEM_MOVEABLE, len);
+   if (!hMem)
       goto liwgExit;
 
-   buf = GlobalLock(hmem);
-   if (!buf)
-      goto liwgExit;
+   buf = GlobalLock(hMem);
+   if (!buf) goto liwgExit;
+
    memcpy(buf, mem, len);
+   if (GlobalUnlock(hMem))
+      goto liwgExit;
+
    if (CreateStreamOnHGlobal(buf, FALSE, &stream) != S_OK)
       goto liwgExit;
 
    if (GdipCreateBitmapFromStream(stream, &bitmap) != GpOk)
       goto liwgExit;
 
-   if (n_req == 3)
-      pixelFormat = GpPixelFormat24bppRGB;
-   else
-      pixelFormat = GpPixelFormat32bppARGB;
+#if BPP == 3
+   assert(n_req == 3);
+   pixelFormat = GpPixelFormat24bppRGB;
+#else
+   assert(n_req == 4);
+   pixelFormat = GpPixelFormat32bppARGB;
+#endif
 
    if (GdipBitmapLockBits(bitmap, NULL, GpImageLockModeRead, pixelFormat, &data) != GpOk)
       goto liwgExit;
@@ -3422,15 +3455,13 @@ static uint8 *LoadImageWithGdiplus(uint8 *mem, int len, int *x, int *y, int *n, 
       memcpy(&ret[i*data.Width*n_req], &((uint8*)data.Scan0)[i*data.Stride], data.Width*n_req);
     
 liwgExit:
-   if (buf)        GlobalUnlock(hmem);
-   if (hmem)       GlobalFree(hmem);
    if (data.Scan0) GdipBitmapUnlockBits(bitmap, &data);
    if (bitmap)     GdipDisposeImage(bitmap);
+   if (stream)     stream->lpVtbl->Release(stream);
+   if (hMem)       GlobalFree(hMem);
 
    return ret;
 }
-
-#pragma pack(pop)
 
 #endif
 
