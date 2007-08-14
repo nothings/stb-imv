@@ -1,4 +1,4 @@
-/* stbi-0.95 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
+/* stbi-0.97 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
                       when you control the images you're loading
 
    QUICK NOTES:
@@ -16,6 +16,8 @@
       PSD loader
   
    history:
+      0.97   jpeg errors on too large a file; also catch another malloc failure
+      0.96   fix detection of invalid v value - particleman@mollyrocket forum
       0.95   during header scan, seek to markers in case of padding
       0.94   STBI_NO_STDIO to disable stdio usage; rename all #defines the same
       0.93   handle jpegtran output; verbose errors
@@ -1029,11 +1031,13 @@ static int process_frame_header(int scan)
             return e("bad component ID","Corrupt JPEG");
       z = get8();
       img_comp[i].h = (z >> 4);  if (!img_comp[i].h || img_comp[i].h > 4) return e("bad H","Corrupt JPEG");
-      img_comp[i].v = z & 15;    if (!img_comp[i].h || img_comp[i].h > 4) return e("bad V","Corrupt JPEG");
+      img_comp[i].v = z & 15;    if (!img_comp[i].v || img_comp[i].v > 4) return e("bad V","Corrupt JPEG");
       img_comp[i].tq = get8();   if (img_comp[i].tq > 3) return e("bad TQ","Corrupt JPEG");
    }
 
    if (scan != SCAN_load) return 1;
+
+   if ((1 << 30) / img_x / img_n < img_y) return e("too large", "Image too large to decode");
 
    for (i=0; i < img_n; ++i) {
       if (img_comp[i].h > h_max) h_max = img_comp[i].h;
@@ -1059,6 +1063,11 @@ static int process_frame_header(int scan)
       img_comp[i].w2 = img_mcu_x * img_comp[i].h * 8;
       img_comp[i].h2 = img_mcu_y * img_comp[i].v * 8;
       img_comp[i].data = (uint8 *) malloc(img_comp[i].w2 * img_comp[i].h2);
+      if (img_comp[i].data == NULL) {
+         for(--i; i >= 0; --i)
+            free(img_comp[i].data);
+         return e("outofmem", "Out of memory");
+      }
    }
 
    return 1;
@@ -1270,6 +1279,10 @@ static uint8 *load_jpeg_image(int *out_x, int *out_y, int *comp, int req_comp)
          // the edges with upsample up to 4x4 (although we only support 2x2
          // currently)
          uint8 *new_data = (uint8 *) malloc((img_x+3)*(img_y+3));
+         if (new_data == NULL) {
+            cleanup_jpeg();
+            return ep("outofmem", "Out of memory (image too large?)");
+         }
          if (img_comp[i].h*2 == img_h_max && img_comp[i].v*2 == img_v_max) {
             int tx = (img_x+1)>>1;
             resample_hv_2(new_data, img_comp[i].data, tx,(img_y+1)>>1, img_comp[i].w2);
@@ -1965,8 +1978,8 @@ static int parse_png_file(int scan, int req_comp)
             int depth,color,interlace,comp,filter;
             if (!first) return e("multiple IHDR","Corrupt PNG");
             if (c.length != 13) return e("bad IHDR len","Corrupt PNG");
-            img_x = get32(); if (img_x > (1 << 24)) return e("too large","Corrupt PNG");
-            img_y = get32(); if (img_y > (1 << 24)) return e("too large","Corrupt PNG");
+            img_x = get32(); if (img_x > (1 << 24)) return e("too large","Very large image (corrupt?)");
+            img_y = get32(); if (img_y > (1 << 24)) return e("too large","Very large image (corrupt?)");
             depth = get8();  if (depth != 8)        return e("8bit only","PNG not supported: 8-bit only");
             color = get8();  if (color > 6)         return e("bad ctype","Corrupt PNG");
             if (color == 3) pal_img_n = 3; else if (color & 1) return e("bad ctype","Corrupt PNG");
@@ -1976,7 +1989,7 @@ static int parse_png_file(int scan, int req_comp)
             if (!img_x || !img_y) return e("0-pixel image","Corrupt PNG");
             if (!pal_img_n) {
                img_n = (color & 2 ? 3 : 1) + (color & 4 ? 1 : 0);
-               if ((1 << 30) / img_x / img_n < img_y) return e("too large", "Corrupt PNG");
+               if ((1 << 30) / img_x / img_n < img_y) return e("too large", "Image too large to decode");
                if (scan == SCAN_header) return 1;
             } else {
                // if paletted, then pal_n is our final components, and
