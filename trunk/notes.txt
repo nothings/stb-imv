@@ -1,4 +1,9 @@
-  Version 0.95: Beta 6 ( XXX )
+  Version 0.96: Beta 7 ( 2007-08-15 )
+    * bugfix: minor stb_image.c fixes
+    * bugfix: don't have gdi+ use threads; correct lock/unlock of global memory
+    * bugfix: load non-7bit-filenames from commandline
+
+  Version 0.95: Beta 6 ( 2007-07-20??? )
     * (feature: use 'f' to flip image vertically, in case FreeImage sucks)
     * feature: ctrl-I launches new viewer instance on current image
     * bugfix: fix cacheing code to allow refreshing current image after flip etc.
