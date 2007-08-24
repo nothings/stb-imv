@@ -1,3 +1,6 @@
+  Version 0.96: Beta 8 ( )
+    * feature: TGA support in stb_image
+
   Version 0.95: Beta 7 ( 2007-08-15 )
     * bugfix: minor stb_image.c fixes
     * bugfix: don't have gdi+ use threads; correct lock/unlock of global memory

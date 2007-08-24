@@ -41,7 +41,7 @@ typedef int Bool;
 // general configuration options
 
 #define USE_GDIPLUS
-//#define USE_FREEIMAGE
+#define USE_FREEIMAGE
 
 // size of border in pixels
 #define FRAME   3
@@ -1235,7 +1235,7 @@ int StringCompareSort(const void *p, const void *q)
    return StringCompare(*(char **) p, *(char **) q);
 }
 
-char *open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp\0";
+char *open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga\0";
 
 // build a filelist for the current directory
 void init_filelist(void)
@@ -2376,7 +2376,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 #ifdef USE_GDIPLUS
    if (LoadGdiplus()) {
        strcat(helptext_center, "\nUsing GDI+");
-       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.gif;*.ico;*.jng;*.tiff\0";
+       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;*.gif;*.ico;*.jng;*.tiff\0";
    }
 #endif
 

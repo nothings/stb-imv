@@ -1,4 +1,4 @@
-/* stbi-0.97 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
+/* stbi-0.98 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
                       when you control the images you're loading
 
    QUICK NOTES:
@@ -16,6 +16,7 @@
       PSD loader
   
    history:
+      0.98   TGA loader by lonesock; dynamically add loaders
       0.97   jpeg errors on too large a file; also catch another malloc failure
       0.96   fix detection of invalid v value - particleman@mollyrocket forum
       0.95   during header scan, seek to markers in case of padding
@@ -113,7 +114,7 @@ extern "C" {
 
 // WRITING API
 
-#ifndef STBI_NO_WRITE
+#if !defined(STBI_NO_WRITE) && !defined(STBI_NO_STDIO)
 // write a BMP/TGA file given tightly packed 'comp' channels (no padding, nor bmp-stride-padding)
 // (you must include the appropriate extension in the filename).
 // returns TRUE on success, FALSE if couldn't open file, error writing file
@@ -127,6 +128,7 @@ extern int      stbi_write_tga       (char *filename,           int x, int y, in
 #ifndef STBI_NO_STDIO
 extern stbi_uc *stbi_load            (char *filename,           int *x, int *y, int *comp, int req_comp);
 extern stbi_uc *stbi_load_from_file  (FILE *f,                  int *x, int *y, int *comp, int req_comp);
+extern int      stbi_info_from_file  (FILE *f,                  int *x, int *y, int *comp);
 #endif
 extern stbi_uc *stbi_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
 // for stbi_load_from_file, file pointer is left pointing immediately after image
@@ -138,9 +140,10 @@ extern char    *stbi_failure_reason  (void);
 extern void     stbi_image_free      (stbi_uc *retval_from_stbi_load);
 
 // get image dimensions & components without fully decoding
-extern int      stbi_info            (char *filename,           int *x, int *y, int *comp);
-extern int      stbi_info_from_file  (char *filename,           int *x, int *y, int *comp);
 extern int      stbi_info_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp);
+#ifndef STBI_NO_STDIO
+extern int      stbi_info            (char *filename,           int *x, int *y, int *comp);
+#endif
 
 // ZLIB client - used by PNG, available for other purposes
 
@@ -152,36 +155,68 @@ extern int   stbi_zlib_decode_buffer(char *obuffer, int olen, char *ibuffer, int
 // TYPE-SPECIFIC ACCESS
 
 // is it a jpeg?
-extern int      stbi_jpeg_test_file       (FILE *f);
 extern int      stbi_jpeg_test_memory     (stbi_uc *buffer, int len);
-
-extern stbi_uc *stbi_jpeg_load            (char *filename,           int *x, int *y, int *comp, int req_comp);
-extern stbi_uc *stbi_jpeg_load_from_file  (FILE *f,                  int *x, int *y, int *comp, int req_comp);
 extern stbi_uc *stbi_jpeg_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
+extern int      stbi_jpeg_info_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp);
+
+#ifndef STBI_NO_STDIO
+extern stbi_uc *stbi_jpeg_load            (char *filename,           int *x, int *y, int *comp, int req_comp);
+extern int      stbi_jpeg_test_file       (FILE *f);
+extern stbi_uc *stbi_jpeg_load_from_file  (FILE *f,                  int *x, int *y, int *comp, int req_comp);
+
 extern int      stbi_jpeg_info            (char *filename,           int *x, int *y, int *comp);
 extern int      stbi_jpeg_info_from_file  (FILE *f,                  int *x, int *y, int *comp);
-extern int      stbi_jpeg_info_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp);
+#endif
 
 extern int      stbi_jpeg_dc_only; // only decode DC component
 
 // is it a png?
-extern int      stbi_png_test_file        (FILE *f);
 extern int      stbi_png_test_memory      (stbi_uc *buffer, int len);
-
-extern stbi_uc *stbi_png_load             (char *filename,           int *x, int *y, int *comp, int req_comp);
-extern stbi_uc *stbi_png_load_from_file   (FILE *f,                  int *x, int *y, int *comp, int req_comp);
 extern stbi_uc *stbi_png_load_from_memory (stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
-extern int      stbi_png_info             (char *filename,           int *x, int *y, int *comp);
-extern int      stbi_png_info_from_file   (FILE *f,                  int *x, int *y, int *comp);
 extern int      stbi_png_info_from_memory (stbi_uc *buffer, int len, int *x, int *y, int *comp);
 
+#ifndef STBI_NO_STDIO
+extern stbi_uc *stbi_png_load             (char *filename,           int *x, int *y, int *comp, int req_comp);
+extern int      stbi_png_info             (char *filename,           int *x, int *y, int *comp);
+extern int      stbi_png_test_file        (FILE *f);
+extern stbi_uc *stbi_png_load_from_file   (FILE *f,                  int *x, int *y, int *comp, int req_comp);
+extern int      stbi_png_info_from_file   (FILE *f,                  int *x, int *y, int *comp);
+#endif
+
 // is it a bmp?
-extern int      stbi_bmp_test_file        (FILE *f);
 extern int      stbi_bmp_test_memory      (stbi_uc *buffer, int len);
 
 extern stbi_uc *stbi_bmp_load             (char *filename,           int *x, int *y, int *comp, int req_comp);
-extern stbi_uc *stbi_bmp_load_from_file   (FILE *f,                  int *x, int *y, int *comp, int req_comp);
 extern stbi_uc *stbi_bmp_load_from_memory (stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
+#ifndef STBI_NO_STDIO
+extern int      stbi_bmp_test_file        (FILE *f);
+extern stbi_uc *stbi_bmp_load_from_file   (FILE *f,                  int *x, int *y, int *comp, int req_comp);
+#endif
+
+// is it a tga?
+extern int      stbi_tga_test_memory      (stbi_uc *buffer, int len);
+
+extern stbi_uc *stbi_tga_load             (char *filename,           int *x, int *y, int *comp, int req_comp);
+extern stbi_uc *stbi_tga_load_from_memory (stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
+#ifndef STBI_NO_STDIO
+extern int      stbi_tga_test_file        (FILE *f);
+extern stbi_uc *stbi_tga_load_from_file   (FILE *f,                  int *x, int *y, int *comp, int req_comp);
+#endif
+
+// define new loaders
+typedef struct
+{
+   int       (*test_memory)(stbi_uc *buffer, int len);
+   stbi_uc * (*load_from_memory)(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
+   #ifndef STBI_NO_STDIO
+   int       (*test_file)(FILE *f);
+   stbi_uc * (*load_from_file)(FILE *f, int *x, int *y, int *comp, int req_comp);
+   #endif
+} stbi_loader;
+
+// register a loader by filling out the above structure (you must defined ALL functions)
+// returns 1 if added or already added, 0 if not added (too many loaders)
+extern int stbi_register_loader(stbi_loader *loader);
 
 #ifdef __cplusplus
 }
@@ -191,7 +226,9 @@ extern stbi_uc *stbi_bmp_load_from_memory (stbi_uc *buffer, int len, int *x, int
 //
 ////   end header file   /////////////////////////////////////////////////////
 
+#ifndef STBI_NO_STDIO
 #include <stdio.h>
+#endif
 #include <stdlib.h>
 #include <memory.h>
 #include <assert.h>
@@ -211,6 +248,10 @@ typedef unsigned int   uint;
 
 // should produce compiler error if size is wrong
 typedef unsigned char validate_uint32[sizeof(uint32)==4];
+
+#if defined(STBI_NO_STDIO) && !defined(STBI_NO_WRITE)
+#define STBI_NO_WRITE
+#endif
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -245,6 +286,28 @@ void stbi_image_free(unsigned char *retval_from_stbi_load)
    free(retval_from_stbi_load);
 }
 
+#define MAX_LOADERS  32
+stbi_loader *loaders[MAX_LOADERS];
+static int max_loaders = 0;
+
+int stbi_register_loader(stbi_loader *loader)
+{
+   int i;
+   for (i=0; i < MAX_LOADERS; ++i) {
+      // already present?
+      if (loaders[i] == loader)
+         return 1;
+      // end of the list?
+      if (loaders[i] == NULL) {
+         loaders[i] = loader;
+         max_loaders = i+1;
+         return 1;
+      }
+   }
+   // no room for it
+   return 0;
+}
+
 #ifndef STBI_NO_STDIO
 unsigned char *stbi_load(char *filename, int *x, int *y, int *comp, int req_comp)
 {
@@ -258,30 +321,42 @@ unsigned char *stbi_load(char *filename, int *x, int *y, int *comp, int req_comp
 
 unsigned char *stbi_load_from_file(FILE *f, int *x, int *y, int *comp, int req_comp)
 {
+   int i;
    if (stbi_jpeg_test_file(f))
       return stbi_jpeg_load_from_file(f,x,y,comp,req_comp);
    if (stbi_png_test_file(f))
       return stbi_png_load_from_file(f,x,y,comp,req_comp);
    if (stbi_bmp_test_file(f))
       return stbi_bmp_load_from_file(f,x,y,comp,req_comp);
+   if (stbi_tga_test_file(f))
+      return stbi_tga_load_from_file(f,x,y,comp,req_comp);
+   for (i=0; i < max_loaders; ++i)
+      if (loaders[i]->test_file(f))
+         return loaders[i]->load_from_file(f,x,y,comp,req_comp);
    return ep("unknown image type", "Image not of any known type, or corrupt");
 }
 #endif
 
 unsigned char *stbi_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp)
 {
+   int i;
    if (stbi_jpeg_test_memory(buffer,len))
       return stbi_jpeg_load_from_memory(buffer,len,x,y,comp,req_comp);
    if (stbi_png_test_memory(buffer,len))
       return stbi_png_load_from_memory(buffer,len,x,y,comp,req_comp);
    if (stbi_bmp_test_memory(buffer,len))
       return stbi_bmp_load_from_memory(buffer,len,x,y,comp,req_comp);
+   if (stbi_tga_test_memory(buffer,len))
+      return stbi_tga_load_from_memory(buffer,len,x,y,comp,req_comp);
+   for (i=0; i < max_loaders; ++i)
+      if (loaders[i]->test_memory(buffer,len))
+         return loaders[i]->load_from_memory(buffer,len,x,y,comp,req_comp);
    return ep("unknown image type", "Image not of any known type, or corrupt");
 }
 
 // @TODO: get image dimensions & components without fully decoding
 extern int      stbi_info            (char *filename,           int *x, int *y, int *comp);
-extern int      stbi_info_from_file  (char *filename,           int *x, int *y, int *comp);
+extern int      stbi_info_from_file  (FILE *f,                  int *x, int *y, int *comp);
 extern int      stbi_info_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp);
 
 //////////////////////////////////////////////////////////////////////////////
@@ -456,8 +531,6 @@ static unsigned char *convert_format(unsigned char *data, int img_n, int req_com
    img_out_n = req_comp;
    return good;
 }
-
-
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -2173,8 +2246,6 @@ extern int      stbi_png_info             (char *filename,           int *x, int
 extern int      stbi_png_info_from_file   (FILE *f,                  int *x, int *y, int *comp);
 extern int      stbi_png_info_from_memory (stbi_uc *buffer, int len, int *x, int *y, int *comp);
 
-/////////////////////// write image ///////////////////////
-
 // Microsoft/Windows BMP image
 
 static int bmp_test(void)
@@ -2353,7 +2424,7 @@ static stbi_uc *bmp_load(int *x, int *y, int *comp, int req_comp)
       pad = (-width)&3;
       for (j=0; j < (int) img_y; ++j) {
          for (i=0; i < (int) img_x; i += 2) {
-            int v=get8(),v2;
+            int v=get8(),v2=0;
             if (bpp == 4) {
                v2 = v & 15;
                v >>= 4;
@@ -2372,7 +2443,7 @@ static stbi_uc *bmp_load(int *x, int *y, int *comp, int req_comp)
          skip(pad);
       }
    } else {
-      int rshift,gshift,bshift,ashift,rcount,gcount,bcount,acount;
+      int rshift=0,gshift=0,bshift=0,ashift=0,rcount=0,gcount=0,bcount=0,acount=0;
       int z = 0;
       int easy=0;
       skip(offset - 14 - hsz);
@@ -2465,8 +2536,287 @@ stbi_uc *stbi_bmp_load_from_memory (stbi_uc *buffer, int len, int *x, int *y, in
    return bmp_load(x,y,comp,req_comp);
 }
 
+// Targa Truevision - TGA
+// by Jonathan Dummer
 
+static int tga_test(void)
+{
+	int sz;
+	get8u();		//	discard Offset
+	sz = get8u();	//	color type
+	if( sz > 1 ) return 0;	//	only RGB or indexed allowed
+	sz = get8u();	//	image type
+	if( (sz != 1) && (sz != 2) && (sz != 3) && (sz != 9) && (sz != 10) && (sz != 11) ) return 0;	//	only RGB or grey allowed, +/- RLE
+	get16();		//	discard palette start
+	get16();		//	discard palette length
+	get8();			//	discard bits per palette color entry
+	get16();		//	discard x origin
+	get16();		//	discard y origin
+	if( get16() < 1 ) return 0;		//	test width
+	if( get16() < 1 ) return 0;		//	test height
+	sz = get8();	//	bits per pixel
+	if( (sz != 8) && (sz != 16) && (sz != 24) && (sz != 32) ) return 0;	//	only RGB or RGBA or grey allowed
+	return 1;		//	seems to have passed everything
+}
 
+#ifndef STBI_NO_STDIO
+int      stbi_tga_test_file        (FILE *f)
+{
+   int r,n = ftell(f);
+   start_file(f);
+   r = tga_test();
+   fseek(f,n,SEEK_SET);
+   return r;
+}
+#endif
+
+int      stbi_tga_test_memory      (stbi_uc *buffer, int len)
+{
+   start_mem(buffer, len);
+   return tga_test();
+}
+
+static stbi_uc *tga_load(int *x, int *y, int *comp, int req_comp)
+{
+	//	read in the TGA header stuff
+	int tga_offset = get8u();
+	int tga_indexed = get8u();
+	int tga_image_type = get8u();
+	int tga_is_RLE = 0;
+	int tga_palette_start = get16le();
+	int tga_palette_len = get16le();
+	int tga_palette_bits = get8u();
+	int tga_x_origin = get16le();
+	int tga_y_origin = get16le();
+	int tga_width = get16le();
+	int tga_height = get16le();
+	int tga_bits_per_pixel = get8u();
+	int tga_inverted = get8u();
+	//	image data
+	unsigned char *tga_data;
+	unsigned char *tga_palette = NULL;
+	int i, j;
+	unsigned char raw_data[4];
+	unsigned char trans_data[4];
+	int RLE_count = 0;
+	int RLE_repeating = 0;
+	int read_next_pixel = 1;
+	//	do a tiny bit of precessing
+	if( tga_image_type >= 8 )
+	{
+		tga_image_type -= 8;
+		tga_is_RLE = 1;
+	}
+	/* int tga_alpha_bits = tga_inverted & 15; */
+	tga_inverted = 1 - ((tga_inverted >> 5) & 1);
+
+	//	error check
+	if( //(tga_indexed) ||
+		(tga_width < 1) || (tga_height < 1) ||
+		(tga_image_type < 1) || (tga_image_type > 3) ||
+		((tga_bits_per_pixel != 8) && (tga_bits_per_pixel != 16) &&
+		(tga_bits_per_pixel != 24) && (tga_bits_per_pixel != 32))
+		)
+	{
+		return NULL;
+	}
+
+	//	If I'm paletted, then I'll use the number of bits from the palette
+	if( tga_indexed )
+	{
+		tga_bits_per_pixel = tga_palette_bits;
+	}
+
+	//	tga info
+	*x = tga_width;
+	*y = tga_height;
+	if( (req_comp < 1) || (req_comp > 4) )
+	{
+		//	just use whatever the file was
+		req_comp = tga_bits_per_pixel / 8;
+		*comp = req_comp;
+	} else
+	{
+		//	force a new number of components
+		*comp = req_comp;
+	}
+	tga_data = (unsigned char*)malloc( tga_width * tga_height * req_comp );
+
+	//	skip to the data's starting position (offset usually = 0)
+	skip( tga_offset );
+	//	do I need to load a palette?
+	if( tga_indexed )
+	{
+		//	any data to skip? (offset usually = 0)
+		skip( tga_palette_start );
+		//	load the palette
+		tga_palette = (unsigned char*)malloc( tga_palette_len * tga_palette_bits / 8 );
+		getn( tga_palette, tga_palette_len * tga_palette_bits / 8 );
+	}
+	//	load the data
+	for( i = 0; i < tga_width * tga_height; ++i )
+	{
+		//	if I'm in RLE mode, do I need to get a RLE chunk?
+		if( tga_is_RLE )
+		{
+			if( RLE_count == 0 )
+			{
+				//	yep, get the next byte as a RLE command
+				int RLE_cmd = get8u();
+				RLE_count = 1 + (RLE_cmd & 127);
+				RLE_repeating = RLE_cmd >> 7;
+				read_next_pixel = 1;
+			} else if( !RLE_repeating )
+			{
+				read_next_pixel = 1;
+			}
+		} else
+		{
+			read_next_pixel = 1;
+		}
+		//	OK, if I need to read a pixel, do it now
+		if( read_next_pixel )
+		{
+			//	load however much data we did have
+			if( tga_indexed )
+			{
+				//	read in 1 byte, then perform the lookup
+				int pal_idx = get8u();
+				if( pal_idx >= tga_palette_len )
+				{
+					//	invalid index
+					pal_idx = 0;
+				}
+				pal_idx *= tga_bits_per_pixel / 8;
+				for( j = 0; j*8 < tga_bits_per_pixel; ++j )
+				{
+					raw_data[j] = tga_palette[pal_idx+j];
+				}
+			} else
+			{
+				//	read in the data raw
+				for( j = 0; j*8 < tga_bits_per_pixel; ++j )
+				{
+					raw_data[j] = get8u();
+				}
+			}
+			//	convert raw to the intermediate format
+			switch( tga_bits_per_pixel )
+			{
+			case 8:
+				//	Luminous => RGBA
+				trans_data[0] = raw_data[0];
+				trans_data[1] = raw_data[0];
+				trans_data[2] = raw_data[0];
+				trans_data[3] = 255;
+				break;
+			case 16:
+				//	Luminous,Alpha => RGBA
+				trans_data[0] = raw_data[0];
+				trans_data[1] = raw_data[0];
+				trans_data[2] = raw_data[0];
+				trans_data[3] = raw_data[1];
+				break;
+			case 24:
+				//	BGR => RGBA
+				trans_data[0] = raw_data[2];
+				trans_data[1] = raw_data[1];
+				trans_data[2] = raw_data[0];
+				trans_data[3] = 255;
+				break;
+			case 32:
+				//	BGRA => RGBA
+				trans_data[0] = raw_data[2];
+				trans_data[1] = raw_data[1];
+				trans_data[2] = raw_data[0];
+				trans_data[3] = raw_data[3];
+				break;
+			}
+			//	clear the reading flag for the next pixel
+			read_next_pixel = 0;
+		} // end of reading a pixel
+		//	convert to final format
+		switch( req_comp )
+		{
+		case 1:
+			//	RGBA => Luminous
+			tga_data[i*req_comp+0] = (trans_data[0] + trans_data[1] + trans_data[2]) / 3;
+			break;
+		case 2:
+			//	RGBA => Luminous,Alpha
+			tga_data[i*req_comp+0] = (trans_data[0] + trans_data[1] + trans_data[2]) / 3;
+			tga_data[i*req_comp+1] = trans_data[3];
+			break;
+		case 3:
+			//	RGBA => RGB
+			tga_data[i*req_comp+0] = trans_data[0];
+			tga_data[i*req_comp+1] = trans_data[1];
+			tga_data[i*req_comp+2] = trans_data[2];
+			break;
+		case 4:
+			//	RGBA => RGBA
+			tga_data[i*req_comp+0] = trans_data[0];
+			tga_data[i*req_comp+1] = trans_data[1];
+			tga_data[i*req_comp+2] = trans_data[2];
+			tga_data[i*req_comp+3] = trans_data[3];
+			break;
+		}
+		//	in case we're in RLE mode, keep counting down
+		--RLE_count;
+	}
+	//	do I need to invert the image?
+	if( tga_inverted )
+	{
+		for( j = 0; j*2 < tga_height; ++j )
+		{
+			int index1 = j * tga_width * req_comp;
+			int index2 = (tga_height - 1 - j) * tga_width * req_comp;
+			for( i = tga_width * req_comp; i > 0; --i )
+			{
+				unsigned char temp = tga_data[index1];
+				tga_data[index1] = tga_data[index2];
+				tga_data[index2] = temp;
+				++index1;
+				++index2;
+			}
+		}
+	}
+	//	clear my palette, if I had one
+	if( tga_palette != NULL )
+	{
+		free( tga_palette );
+	}
+	//	the things I do to get rid of an error message, and yet keep
+	//	Microsoft's C compilers happy... [8^(
+	tga_palette_start = tga_palette_len = tga_palette_bits =
+			tga_x_origin = tga_y_origin = 0;
+	//	OK, done
+	return tga_data;
+}
+
+#ifndef STBI_NO_STDIO
+stbi_uc *stbi_tga_load             (char *filename,           int *x, int *y, int *comp, int req_comp)
+{
+   stbi_uc *data;
+   FILE *f = fopen(filename, "rb");
+   if (!f) return NULL;
+   data = tga_load(x,y,comp,req_comp);
+   fclose(f);
+   return data;
+}
+
+stbi_uc *stbi_tga_load_from_file   (FILE *f,                  int *x, int *y, int *comp, int req_comp)
+{
+   start_file(f);
+   return tga_load(x,y,comp,req_comp);
+}
+#endif
+
+stbi_uc *stbi_tga_load_from_memory (stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp)
+{
+   start_mem(buffer, len);
+   return tga_load(x,y,comp,req_comp);
+}
 
 
 /////////////////////// write image ///////////////////////
@@ -2573,5 +2923,4 @@ int stbi_write_tga(char *filename, int x, int y, int comp, void *data)
 //    PSD: no, channels output separately
 //    TIFF: no, stripwise-interleaved... i think
 
-
-#endif
+#endif STBI_NO_WRITE
