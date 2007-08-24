@@ -54,9 +54,8 @@ typedef int Bool;
 
 
 
-int do_show;
-int delay_time = 4000;
-
+Bool do_show;
+float delay_time = 4;
 
 // all programs get the version number from the same place: version.bat
 #define set   static char *
@@ -601,7 +600,8 @@ char helptext_left[] =
    "      B: toggle border\n"
    "SHIFT-B: toggle border but keep stripe\n"
    " CTRL-B: toggle white stripe in border\n"
-   "     L: toggle filename label\n"
+   "      L: toggle filename label\n"
+   "      S: slideshow in current directory\n"
 ;
 
 char helptext_right[] =
@@ -1501,7 +1501,7 @@ void advance(int dir)
          cache[i].bail = 1;
 
    if (do_show)
-      SetTimer(win, 0, delay_time, NULL);
+      SetTimer(win, 0, (int)(delay_time*1000), NULL);
 }
 
 // ctrl-O, or initial command if no filename: run
@@ -1798,6 +1798,8 @@ void reg_save(void)
       reg_set("lfs", &label_font_height, 4);
       reg_set("label", &show_label, 4);
       reg_set("stbi", &only_stbi, 4);
+      reg_set("border", &show_frame, 4);
+      reg_set("stime", &delay_time, 4);
       RegCloseKey(zreg);
    }
 }
@@ -1814,6 +1816,9 @@ void reg_load(void)
       if (reg_get("cache", &temp, 4))
          max_cache_bytes = temp << 20;
       reg_get("stbi", &only_stbi, 4);
+      reg_get("border", &show_frame, 4);
+      extra_border = show_frame;
+      reg_get("stime", &delay_time, 4);
       RegCloseKey(zreg);
    }
 }
@@ -1837,6 +1842,23 @@ static int get_dialog_number(int id)
    return atoi(buffer);
 }
 
+// set an edit control's text from an integer
+static void set_dialog_numberf(int id, float value)
+{
+   char buffer[16];
+   sprintf(buffer, "%.2f", value);
+   SetWindowText(GetDlgItem(dialog, id), buffer);
+}
+
+// get an edit control's text as an integer
+static float get_dialog_numberf(int id)
+{
+   char buffer[32];
+   int n = GetWindowText(GetDlgItem(dialog,id), buffer, sizeof(buffer)-1);
+   buffer[n] = 0;
+   return (float) atof(buffer);
+}
+
 // clamp an edit control's text into an integer range (and
 // remove non-integer chacters)
 static void dialog_clamp(int id, int low, int high)
@@ -1846,6 +1868,15 @@ static void dialog_clamp(int id, int low, int high)
    else if (x > high) x = high;
    else return;
    set_dialog_number(id,x);
+}
+
+static void dialog_clampf(int id, float low, float high)
+{
+   float x = get_dialog_numberf(id);
+   if (x < low) x = low;
+   else if (x > high) x = high;
+   else return;
+   set_dialog_numberf(id,x);
 }
 
 extern unsigned char *rom_images[]; // preference images
@@ -1880,10 +1911,12 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
          SendMessage(GetDlgItem(hdlg, DIALOG_upsample), BM_SETCHECK, upsample_cubic, 0);
          SendMessage(GetDlgItem(hdlg, DIALOG_showlabel), BM_SETCHECK, show_label, 0);
          SendMessage(GetDlgItem(hdlg, DIALOG_stbi_only), BM_SETCHECK, only_stbi, 0);
+         SendMessage(GetDlgItem(hdlg, DIALOG_showborder), BM_SETCHECK, show_frame, 0);
          for (i=0; i < 6; ++i)
             set_dialog_number(DIALOG_r1+i, alpha_background[0][i]);
          set_dialog_number(DIALOG_cachesize, max_cache_bytes >> 20);
          set_dialog_number(DIALOG_labelheight, label_font_height);
+         set_dialog_numberf(DIALOG_slideshowtime, delay_time);
          return TRUE;
       }
       case WM_PAINT: {
@@ -1920,10 +1953,14 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
             case DIALOG_labelheight:
                if (n == EN_KILLFOCUS) dialog_clamp(k,1,200);
                break;
+            case DIALOG_slideshowtime:
+               if (n == EN_KILLFOCUS) dialog_clampf(k,0,3600 * 24 * 31); // 1 month
+               break;
 
             case IDOK: {
                // user clicked ok... copy out current values to check for changes
-               unsigned char cur[6];
+               unsigned char curc[6];
+               int new_border;
                int old_cubic = upsample_cubic;
                memcpy(cur, alpha_background, 6);
 
@@ -1932,12 +1969,14 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                   alpha_background[0][i] = get_dialog_number(DIALOG_r1+i);
                max_cache_bytes = get_dialog_number(DIALOG_cachesize) << 20;
                label_font_height = get_dialog_number(DIALOG_labelheight);
+               delay_time = get_dialog_numberf(DIALOG_slideshowtime);
                upsample_cubic = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_upsample ), BM_GETCHECK,0,0);
                show_label     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showlabel), BM_GETCHECK,0,0);
                only_stbi      = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_stbi_only), BM_GETCHECK,0,0);
+               new_border     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showborder),BM_GETCHECK,0,0);
 
                // if alpha_background changed, clear the cache of any images that used it                
-               if (memcmp(alpha_background, cur, 6)) {
+               if (memcmp(alpha_background, curc, 6)) {
                   stb_mutex_begin(cache_mutex);
                   for (i=0; i < MAX_CACHED_IMAGES; ++i) {
                      if (cache[i].status == LOAD_available) {
@@ -1958,6 +1997,13 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                   free(cur_filename);
                   cur_filename = NULL;
                   advance(0);
+               }
+
+               // if border changed, update
+               if (new_border != show_frame) {
+                  toggle_frame();
+                  extra_border = show_frame;
+                  if (cur) frame(cur);
                }
 
                // save the data out to the registry
@@ -2061,6 +2107,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          // if the most recently-browsed and displayable image is an error, show it
          if (best->status == LOAD_error_reading || best->status == LOAD_error_decoding)
             set_error(best);
+
          break;
       }
 
@@ -2130,7 +2177,6 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
       case WM_TIMER: {
          advance(1);
          return 0;
-         break;
       }
 
       #define MY_SHIFT (1 << 16)
@@ -2163,10 +2209,10 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                InvalidateRect(win, NULL, FALSE);
                break;
 
-            case 'S':
+            case 's': case 'S':
                do_show = !do_show;
                if (do_show)
-                  SetTimer(win,0,delay_time,NULL);
+                  SetTimer(win,0,(int)(1000*delay_time),NULL);
                else
                   KillTimer(win,0);
                break;
@@ -2518,6 +2564,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
          pending_resize.image = NULL;
       }
       cur_filename = strdup(filename);
+      if (!show_frame) {
+         x += FRAME;
+         y += FRAME;
+         w -= FRAME*2;
+         h -= FRAME*2;
+      }
 
       // create the window
       hWnd = CreateWindow(szAppName, displayName,
