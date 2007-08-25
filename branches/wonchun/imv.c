@@ -17,7 +17,11 @@
 */
 
 // Set section alignment to minimize alignment overhead
+
+
+#if (_MSC_VER < 1300)
 #pragma comment(linker, "/FILEALIGN:0x200")
+#endif
 
 #define _WIN32_WINNT 0x0500
 //#define WINVER 0x0500   // produces an annoying warning message, so we do it the hard way
@@ -32,6 +36,8 @@
 
 #define STBI_FAILURE_USERMSG
 #define STBI_NO_STDIO
+//#define USE_STBI
+
 #ifdef USE_STBI
 #include "stb_image.c"    /*     http://nothings.org/stb_image.c   */
 #endif 
@@ -1785,7 +1791,9 @@ int reg_set(char *str, void *data, int len)
    return (ERROR_SUCCESS == RegSetValueEx(zreg, str, 0, REG_BINARY, data, len));
 }
 
+#ifdef USE_STBI
 int only_stbi=FALSE;
+#endif
 
 // we use very short strings for these to avoid wasting space, since
 // people shouldn't be mucking with them directly anyway!
@@ -1799,7 +1807,9 @@ void reg_save(void)
       reg_set("cache", &temp, 4);
       reg_set("lfs", &label_font_height, 4);
       reg_set("label", &show_label, 4);
+#ifdef USE_STBI
       reg_set("stbi", &only_stbi, 4);
+#endif
       reg_set("border", &show_frame, 4);
       reg_set("stime", &delay_time, 4);
       RegCloseKey(zreg);
@@ -1817,7 +1827,9 @@ void reg_load(void)
       reg_get("label", &show_label, 4);
       if (reg_get("cache", &temp, 4))
          max_cache_bytes = temp << 20;
+#ifdef USE_STBI
       reg_get("stbi", &only_stbi, 4);
+#endif
       reg_get("border", &show_frame, 4);
       extra_border = show_frame;
       reg_get("stime", &delay_time, 4);
@@ -1894,11 +1906,12 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
    switch(imsg)
    {
       case WM_INITDIALOG: {
-#ifdef USE_STBI
          // pick a random preference image
          int n = ((rand() >> 6) % 3);
-         int x,y,i,j,k;
+         int x, y;
          // decode it
+#ifdef USE_STBI
+         int i, j, k;
          uint8 *data = stbi_load_from_memory(rom_images[n],2000,&x,&y,NULL,1);
          pref_image = bmp_alloc(x,y);
          if (data && pref_image) {
@@ -1909,11 +1922,22 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                      pref_image->pixels[pref_image->stride*j + BPP*i + k] = data[j*x+i];
          }
          if (data) free(data);
+#else
+         int channels;
+         Bool loaded_as_rgb;
+         uint8 *data = imv_decode_from_memory(rom_images[n], 2000, &x, &y, &loaded_as_rgb, &channels, BPP);
+         assert(channels == BPP);
+         pref_image = bmp_alloc(x, y);
+         pref_image->pixels = data;
 #endif
          // copy preferences into dialog
          SendMessage(GetDlgItem(hdlg, DIALOG_upsample), BM_SETCHECK, upsample_cubic, 0);
          SendMessage(GetDlgItem(hdlg, DIALOG_showlabel), BM_SETCHECK, show_label, 0);
+#ifdef USE_STBI
          SendMessage(GetDlgItem(hdlg, DIALOG_stbi_only), BM_SETCHECK, only_stbi, 0);
+#else
+         EnableWindow(GetDlgItem(hdlg, DIALOG_stbi_only), FALSE);
+#endif
          SendMessage(GetDlgItem(hdlg, DIALOG_showborder), BM_SETCHECK, show_frame, 0);
          for (i=0; i < 6; ++i)
             set_dialog_number(DIALOG_r1+i, alpha_background[0][i]);
@@ -1975,7 +1999,9 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                delay_time = get_dialog_numberf(DIALOG_slideshowtime);
                upsample_cubic = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_upsample ), BM_GETCHECK,0,0);
                show_label     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showlabel), BM_GETCHECK,0,0);
+#ifdef USE_STBI
                only_stbi      = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_stbi_only), BM_GETCHECK,0,0);
+#endif USE_STBI
                new_border     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showborder),BM_GETCHECK,0,0);
 
                // if alpha_background changed, clear the cache of any images that used it                
@@ -3444,14 +3470,18 @@ static Bool LoadGdiplus(void)
    GdipBitmapLockBits = (GdipBitmapLockBitsProc)GpFunc("GdipBitmapLockBits");
    GdipBitmapUnlockBits = (GdipBitmapUnlockBitsProc)GpFunc("GdipBitmapUnlockBits");
    if (!GdiplusPresent) {
+#ifdef USE_STBI
       if (!only_stbi)
+#endif
          error("Invalid GdiPlus.dll; disabling GDI+ support.");
    } else {
       // no need to use GDI+ backup thread, or to call the hook methods in gpStartupOutput
       GdiplusStartupInput gpStartupInput = { 1, NULL, TRUE, FALSE };
       if (GdiplusStartup(&GpToken, &gpStartupInput, &gpStartupOutput) != GpOk) {
          GdiplusPresent = FALSE;
+#ifdef USE_STBI
          if (!only_stbi)
+#endif
             error("Failed to initialize GdiPlus.dll; disabling GDI+ support.");
       }
    }
@@ -3616,7 +3646,9 @@ static int LoadFreeImage(void)
    FreeImage_IsTransparent = (freeimage_istransparent *)fifunc("_FreeImage_IsTransparent@4");
 
    if (!FreeImagePresent) {
+#ifdef USE_STBI
       if (!only_stbi)
+#endif
          error("Invalid FreeImage.dll; disabling FreeImage support.");
    } else
       FreeImage_SetOutputMessage(FreeImageErrorHandler);
