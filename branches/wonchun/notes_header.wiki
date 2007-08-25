@@ -1,0 +1,10 @@
+#summary Release notes for all versions
+
+= Release =
+
+This is a beta version, targetting the eventual milestones:
+
+  version 1.00 - stable release 
+
+= Release Notes =
+
