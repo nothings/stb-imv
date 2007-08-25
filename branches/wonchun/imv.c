@@ -32,7 +32,9 @@
 
 #define STBI_FAILURE_USERMSG
 #define STBI_NO_STDIO
+#ifdef USE_STBI
 #include "stb_image.c"    /*     http://nothings.org/stb_image.c   */
+#endif 
 
 #include "resource.h"
 
@@ -41,7 +43,7 @@ typedef int Bool;
 // general configuration options
 
 #define USE_GDIPLUS
-#define USE_FREEIMAGE
+//#define USE_FREEIMAGE
 
 // size of border in pixels
 #define FRAME   3
@@ -1892,6 +1894,7 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
    switch(imsg)
    {
       case WM_INITDIALOG: {
+#ifdef USE_STBI
          // pick a random preference image
          int n = ((rand() >> 6) % 3);
          int x,y,i,j,k;
@@ -1906,7 +1909,7 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                      pref_image->pixels[pref_image->stride*j + BPP*i + k] = data[j*x+i];
          }
          if (data) free(data);
-
+#endif
          // copy preferences into dialog
          SendMessage(GetDlgItem(hdlg, DIALOG_upsample), BM_SETCHECK, upsample_cubic, 0);
          SendMessage(GetDlgItem(hdlg, DIALOG_showlabel), BM_SETCHECK, show_label, 0);
@@ -3661,6 +3664,7 @@ static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* 
    // prefer STBI over everything else
 
    *loaded_as_rgb = FALSE;
+#ifdef USE_STBI
    res = stbi_load_from_memory(mem, len, x, y, n, n_req);
    if (res) {
        *loaded_as_rgb = TRUE;
@@ -3670,6 +3674,7 @@ static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* 
 
    if (only_stbi)
       return res;
+#endif
 
    // prefer GDI+ over FreeImage
 
