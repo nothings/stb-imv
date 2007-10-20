@@ -343,6 +343,7 @@ static unsigned char alpha_background[2][3] =
 
 // given raw decoded data from stbi_load, make it into a proper Image (e.g. creating a
 // windows-compatible bitmap with 4-byte aligned rows and BGR color order)
+float lmin=0,lmax=1;
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL image_loaded_as_rgb, int image_n)
 {
    int i,j,k=0;
@@ -361,6 +362,14 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
             unsigned char t = image_data[k+0];
             image_data[k+0] = image_data[k+2];
             image_data[k+2] = t;
+         }
+
+         if (lmin > 0 || lmax < 1) {
+            int c;
+            for (c=0; c < 3; ++c) {
+               int z = (int) stb_linear_remap(image_data[k+c], lmin*255,lmax*255, 0,255);
+               image_data[k+c] = stb_clamp(z, 0, 255);
+            }
          }
 
          #if BPP==4
@@ -1235,7 +1244,7 @@ int StringCompareSort(const void *p, const void *q)
    return StringCompare(*(char **) p, *(char **) q);
 }
 
-char *open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga\0";
+char *open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;*.hdr\0";
 
 // build a filelist for the current directory
 void init_filelist(void)
@@ -1881,6 +1890,27 @@ static void dialog_clampf(int id, float low, float high)
 
 extern unsigned char *rom_images[]; // preference images
 
+void clear_cache(int had_alpha)
+{
+   int i;
+   stb_mutex_begin(cache_mutex);
+   for (i=0; i < MAX_CACHED_IMAGES; ++i) {
+      if (cache[i].status == LOAD_available) {
+         if (had_alpha ? cache[i].image->had_alpha : TRUE) {
+            stb_sdict_remove(file_cache, cache[i].filename, NULL);
+            free(cache[i].filename);
+            imfree(cache[i].image);
+            cache[i].status = LOAD_unused;
+            cache[i].image = NULL;
+            cache[i].filename = NULL;
+         }
+      }
+   }
+   stb_mutex_end(cache_mutex);
+   free(cur_filename);
+   cur_filename = NULL;
+}
+
 // preferences dialog windows procedure
 BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
 {
@@ -1977,20 +2007,7 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
 
                // if alpha_background changed, clear the cache of any images that used it                
                if (memcmp(alpha_background, curc, 6)) {
-                  stb_mutex_begin(cache_mutex);
-                  for (i=0; i < MAX_CACHED_IMAGES; ++i) {
-                     if (cache[i].status == LOAD_available) {
-                        if (cache[i].image->had_alpha) {
-                           stb_sdict_remove(file_cache, cache[i].filename, NULL);
-                           free(cache[i].filename);
-                           imfree(cache[i].image);
-                           cache[i].status = LOAD_unused;
-                           cache[i].image = NULL;
-                           cache[i].filename = NULL;
-                        }
-                     }
-                  }
-                  stb_mutex_end(cache_mutex);
+                  clear_cache(1);
                   // force a reload of the current image
                   advance(0);
                } else if (old_cubic != upsample_cubic) {
@@ -2217,6 +2234,11 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                   KillTimer(win,0);
                break;
 
+            case '[': lmax = stb_clamp(lmax-1.0f/32, 0,1); clear_cache(0); advance(0); break;
+            case ']': lmax = stb_clamp(lmax+1.0f/32, 0,1); clear_cache(0); advance(0); break;
+            case '{': lmin = stb_clamp(lmin-1.0f/32, 0,1); clear_cache(0); advance(0); break;
+            case '}': lmin = stb_clamp(lmin+1.0f/32, 0,1); clear_cache(0); advance(0); break;
+
             default:
                return 1;
          }
@@ -2422,7 +2444,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 #ifdef USE_GDIPLUS
    if (LoadGdiplus()) {
        strcat(helptext_center, "\nUsing GDI+");
-       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;*.gif;*.ico;*.jng;*.tiff\0";
+       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;*.hdr;*.gif;*.ico;*.jng;*.tiff\0";
    }
 #endif
 
@@ -2431,7 +2453,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 #ifdef USE_FREEIMAGE
    if (LoadFreeImage()) {
       strcat(helptext_center, "\nUsing FreeImage.dll: http://freeimage.sourceforge.net");
-      open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.dds;*.gif;*.ico;*.jng;*.lbm;*.pcx;*.ppm;*.psd;*.tga;*.tiff\0";
+      open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.hdr;*.dds;*.gif;*.ico;*.jng;*.lbm;*.pcx;*.ppm;*.psd;*.tga;*.tiff\0";
    }
 #endif
    assert(helptext_center[sizeof(helptext_center)-1]==0);
