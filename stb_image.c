@@ -1,4 +1,4 @@
-/* stbi-0.98 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
+/* stbi-1.02 - public domain JPEG/PNG reader - http://nothings.org/stb_image.c
                       when you control the images you're loading
 
    QUICK NOTES:
@@ -8,6 +8,8 @@
       JPEG baseline (no JPEG progressive, no oddball channel decimations)
       PNG non-interlaced
       BMP non-1bpp, non-RLE
+      TGA (not sure what subset, if a subset)
+      HDR (radiance rgbE format)
       writes BMP,TGA (define STBI_NO_WRITE to remove code)
       decoded from memory or through stdio FILE (define STBI_NO_STDIO to remove code)
         
@@ -16,7 +18,12 @@
       PSD loader
   
    history:
-      0.98   TGA loader by lonesock; dynamically add loaders
+      1.02   support for (subset of) HDR files, float interface for preferred access to them
+      1.01   fix bug: possible bug in handling right-side up bmps... not sure
+             fix bug: the stbi_bmp_load() and stbi_tga_load() functions didn't work at all
+      1.00   interface to zlib that skips zlib header
+      0.99   correct handling of alpha in palette
+      0.98   TGA loader by lonesock; dynamically add loaders (untested)
       0.97   jpeg errors on too large a file; also catch another malloc failure
       0.96   fix detection of invalid v value - particleman@mollyrocket forum
       0.95   during header scan, seek to markers in case of padding
@@ -50,7 +57,7 @@
 //    - channel subsampling of at most 2 in each dimension (jpeg)
 //    - no delayed line count (jpeg) -- IJG doesn't support either
 //
-// Basic usage:
+// Basic usage (see HDR discussion below):
 //    int x,y,n;
 //    unsigned char *data = stbi_load(filename, &x, &y, &n, 0);
 //    // ... process data if not NULL ... 
@@ -91,9 +98,52 @@
 // more user-friendly ones.
 //
 // Paletted PNG and BMP images are automatically depalettized.
+//
+//
+// ===========================================================================
+//
+// HDR image support   (disable by defining STBI_NO_HDR)
+//
+// stb_image now supports loading HDR images in general, and currently
+// the Radiance .HDR file format, although the support is provided
+// generically. You can still load any file through the existing interface;
+// if you attempt to load an HDR file, it will be automatically remapped to
+// LDR, assuming gamma 2.2 and an arbitrary scale factor defaulting to 1;
+// both of these constants can be reconfigured through this interface:
+//
+//     stbi_hdr_to_ldr_gamma(2.2f);
+//     stbi_hdr_to_ldr_scale(1.0f);
+//
+// (note, do not use _inverse_ constants; stbi_image will invert them
+// appropriately).
+//
+// Additionally, there is a new, parallel interface for loading files as
+// (linear) floats to preserve the full dynamic range:
+//
+//    float *data = stbi_loadf(filename, &x, &y, &n, 0);
+// 
+// If you load LDR images through this interface, those images will
+// be promoted to floating point values, run through the inverse of
+// constants corresponding to the above:
+//
+//     stbi_ldr_to_hdr_scale(1.0f);
+//     stbi_ldr_to_hdr_gamma(2.2f);
+//
+// Finally, given a filename (or an open file or memory block--see header
+// file for details) containing image data, you can query for the "most
+// appropriate" interface to use (that is, whether the image is HDR or
+// not), using:
+//
+//     stbi_is_hdr(char *filename);
+
 
 #ifndef STBI_NO_STDIO
 #include <stdio.h>
+#endif
+
+#ifndef STBI_NO_HDR
+#include <math.h>  // ldexp
+#include <string.h> // strcmp
 #endif
 
 enum
@@ -133,6 +183,21 @@ extern int      stbi_info_from_file  (FILE *f,                  int *x, int *y, 
 extern stbi_uc *stbi_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
 // for stbi_load_from_file, file pointer is left pointing immediately after image
 
+#ifndef STBI_NO_HDR
+#ifndef STBI_NO_STDIO
+extern float *stbi_loadf            (char *filename,           int *x, int *y, int *comp, int req_comp);
+extern float *stbi_loadf_from_file  (FILE *f,                  int *x, int *y, int *comp, int req_comp);
+#endif
+extern float *stbi_loadf_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
+
+extern void   stbi_hdr_to_ldr_gamma(float gamma);
+extern void   stbi_hdr_to_ldr_scale(float scale);
+
+extern void   stbi_ldr_to_hdr_gamma(float gamma);
+extern void   stbi_ldr_to_hdr_scale(float scale);
+
+#endif // STBI_NO_HDR
+
 // get a VERY brief reason for failure
 extern char    *stbi_failure_reason  (void);
 
@@ -141,8 +206,11 @@ extern void     stbi_image_free      (stbi_uc *retval_from_stbi_load);
 
 // get image dimensions & components without fully decoding
 extern int      stbi_info_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp);
+extern int      stbi_is_hdr_from_memory(stbi_uc *buffer, int len);
 #ifndef STBI_NO_STDIO
 extern int      stbi_info            (char *filename,           int *x, int *y, int *comp);
+extern int      stbi_is_hdr          (char *filename);
+extern int      stbi_is_hdr_from_file(FILE *f);
 #endif
 
 // ZLIB client - used by PNG, available for other purposes
@@ -150,6 +218,9 @@ extern int      stbi_info            (char *filename,           int *x, int *y, 
 extern char *stbi_zlib_decode_malloc_guesssize(int initial_size, int *outlen);
 extern char *stbi_zlib_decode_malloc(char *buffer, int len, int *outlen);
 extern int   stbi_zlib_decode_buffer(char *obuffer, int olen, char *ibuffer, int ilen);
+
+extern char *stbi_zlib_decode_noheader_malloc(char *buffer, int len, int *outlen);
+extern int   stbi_zlib_decode_noheader_buffer(char *obuffer, int olen, char *ibuffer, int ilen);
 
 
 // TYPE-SPECIFIC ACCESS
@@ -201,6 +272,16 @@ extern stbi_uc *stbi_tga_load_from_memory (stbi_uc *buffer, int len, int *x, int
 #ifndef STBI_NO_STDIO
 extern int      stbi_tga_test_file        (FILE *f);
 extern stbi_uc *stbi_tga_load_from_file   (FILE *f,                  int *x, int *y, int *comp, int req_comp);
+#endif
+
+// is it an hdr?
+extern int      stbi_hdr_test_memory      (stbi_uc *buffer, int len);
+
+extern float *  stbi_hdr_load             (char *filename,           int *x, int *y, int *comp, int req_comp);
+extern float *  stbi_hdr_load_from_memory (stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp);
+#ifndef STBI_NO_STDIO
+extern int      stbi_hdr_test_file        (FILE *f);
+extern float *  stbi_hdr_load_from_file   (FILE *f,                  int *x, int *y, int *comp, int req_comp);
 #endif
 
 // define new loaders
@@ -279,7 +360,7 @@ static int e(char *str)
    #define e(x,y)  e(x)
 #endif
 
-#define ep(x,y)   (e(x,y),NULL)   
+#define ep(x,y)   (e(x,y)?NULL:NULL)
 
 void stbi_image_free(unsigned char *retval_from_stbi_load)
 {
@@ -308,6 +389,11 @@ int stbi_register_loader(stbi_loader *loader)
    return 0;
 }
 
+#ifndef STBI_NO_HDR
+static float   *ldr_to_hdr(stbi_uc *data, int x, int y, int comp);
+static stbi_uc *hdr_to_ldr(float   *data, int x, int y, int comp);
+#endif
+
 #ifndef STBI_NO_STDIO
 unsigned char *stbi_load(char *filename, int *x, int *y, int *comp, int req_comp)
 {
@@ -328,11 +414,18 @@ unsigned char *stbi_load_from_file(FILE *f, int *x, int *y, int *comp, int req_c
       return stbi_png_load_from_file(f,x,y,comp,req_comp);
    if (stbi_bmp_test_file(f))
       return stbi_bmp_load_from_file(f,x,y,comp,req_comp);
-   if (stbi_tga_test_file(f))
-      return stbi_tga_load_from_file(f,x,y,comp,req_comp);
+   #ifndef STBI_NO_HDR
+   if (stbi_hdr_test_file(f)) {
+      float *hdr = stbi_hdr_load_from_file(f, x,y,comp,req_comp);
+      return hdr_to_ldr(hdr, *x, *y, req_comp ? req_comp : *comp);
+   }
+   #endif
    for (i=0; i < max_loaders; ++i)
       if (loaders[i]->test_file(f))
          return loaders[i]->load_from_file(f,x,y,comp,req_comp);
+   // test tga last because it's a crappy test!
+   if (stbi_tga_test_file(f))
+      return stbi_tga_load_from_file(f,x,y,comp,req_comp);
    return ep("unknown image type", "Image not of any known type, or corrupt");
 }
 #endif
@@ -346,18 +439,102 @@ unsigned char *stbi_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, i
       return stbi_png_load_from_memory(buffer,len,x,y,comp,req_comp);
    if (stbi_bmp_test_memory(buffer,len))
       return stbi_bmp_load_from_memory(buffer,len,x,y,comp,req_comp);
-   if (stbi_tga_test_memory(buffer,len))
-      return stbi_tga_load_from_memory(buffer,len,x,y,comp,req_comp);
+   #ifndef STBI_NO_HDR
+   if (stbi_hdr_test_memory(buffer, len)) {
+      float *hdr = stbi_hdr_load_from_memory(buffer, len,x,y,comp,req_comp);
+      return hdr_to_ldr(hdr, *x, *y, req_comp ? req_comp : *comp);
+   }
+   #endif
    for (i=0; i < max_loaders; ++i)
       if (loaders[i]->test_memory(buffer,len))
          return loaders[i]->load_from_memory(buffer,len,x,y,comp,req_comp);
+   // test tga last because it's a crappy test!
+   if (stbi_tga_test_memory(buffer,len))
+      return stbi_tga_load_from_memory(buffer,len,x,y,comp,req_comp);
    return ep("unknown image type", "Image not of any known type, or corrupt");
 }
+
+#ifndef STBI_NO_HDR
+
+#ifndef STBI_NO_STDIO
+float *stbi_loadf(char *filename, int *x, int *y, int *comp, int req_comp)
+{
+   FILE *f = fopen(filename, "rb");
+   float *result;
+   if (!f) return ep("can't fopen", "Unable to open file");
+   result = stbi_loadf_from_file(f,x,y,comp,req_comp);
+   fclose(f);
+   return result;
+}
+
+float *stbi_loadf_from_file(FILE *f, int *x, int *y, int *comp, int req_comp)
+{
+   unsigned char *data;
+   if (stbi_hdr_test_file(f))
+      return stbi_hdr_load_from_file(f,x,y,comp,req_comp);
+   data = stbi_load_from_file(f, x, y, comp, req_comp);
+   if (data)
+      return ldr_to_hdr(data, *x, *y, req_comp ? req_comp : *comp);
+   return ep("unknown image type", "Image not of any known type, or corrupt");
+}
+#endif
+
+float *stbi_loadf_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp)
+{
+   stbi_uc *data;
+   if (stbi_hdr_test_memory(buffer, len))
+      return stbi_hdr_load_from_memory(buffer, len,x,y,comp,req_comp);
+   data = stbi_load_from_memory(buffer, len, x, y, comp, req_comp);
+   if (data)
+      return ldr_to_hdr(data, *x, *y, req_comp ? req_comp : *comp);
+   return ep("unknown image type", "Image not of any known type, or corrupt");
+}
+#endif
+
+// these is-hdr-or-not is defined independent of whether STBI_NO_HDR is
+// defined, for API simplicity; if STBI_NO_HDR is defined, it always
+// reports false!
+
+extern int      stbi_is_hdr_from_memory(stbi_uc *buffer, int len)
+{
+   return stbi_hdr_test_memory(buffer, len);
+}
+
+#ifndef STBI_NO_STDIO
+extern int      stbi_is_hdr          (char *filename)
+{
+   FILE *f = fopen(filename, "rb");
+   int result=0;
+   if (f) {
+      result = stbi_is_hdr_from_file(f);
+      fclose(f);
+   }
+   return result;
+}
+
+extern int      stbi_is_hdr_from_file(FILE *f)
+{
+   return stbi_hdr_test_file(f);
+}
+
+#endif
 
 // @TODO: get image dimensions & components without fully decoding
 extern int      stbi_info            (char *filename,           int *x, int *y, int *comp);
 extern int      stbi_info_from_file  (FILE *f,                  int *x, int *y, int *comp);
 extern int      stbi_info_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp);
+
+#ifndef STBI_NO_HDR
+static float h2l_gamma_i=1.0f/2.2f, h2l_scale_i=1.0f;
+static float l2h_gamma=2.2f, l2h_scale=1.0f;
+
+void   stbi_hdr_to_ldr_gamma(float gamma) { h2l_gamma_i = 1/gamma; }
+void   stbi_hdr_to_ldr_scale(float scale) { h2l_scale_i = 1/scale; }
+
+void   stbi_ldr_to_hdr_gamma(float gamma) { l2h_gamma = gamma; }
+void   stbi_ldr_to_hdr_scale(float scale) { l2h_scale = scale; }
+#endif
+
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -376,7 +553,6 @@ enum
 };
 
 // An API for reading either from memory or file.
-// It fits on a single screen. No abstract base classes needed.
 #ifndef STBI_NO_STDIO
 static FILE  *img_file;
 #endif
@@ -508,7 +684,8 @@ static unsigned char *convert_format(unsigned char *data, int img_n, int req_com
       #define COMBO(a,b)  ((a)*8+(b))
       #define CASE(a,b)   case COMBO(a,b): for(i=0; i < img_x; ++i, src += a, dest += b)
 
-      // convert source image with img_n components to one with req_comp components
+      // convert source image with img_n components to one with req_comp components;
+      // avoid switch per pixel, so use switch per scanline and massive macros
       switch(COMBO(img_n, req_comp)) {
          CASE(1,2) dest[0]=src[0], dest[1]=255; break;
          CASE(1,3) dest[0]=dest[1]=dest[2]=src[0]; break;
@@ -530,6 +707,49 @@ static unsigned char *convert_format(unsigned char *data, int img_n, int req_com
    free(data);
    img_out_n = req_comp;
    return good;
+}
+
+static float   *ldr_to_hdr(stbi_uc *data, int x, int y, int comp)
+{
+   int i,k,n;
+   float *output = (float *) malloc(x * y * comp * sizeof(float));
+   if (output == NULL) { free(data); return ep("outofmem", "Out of memory"); }
+   // compute number of non-alpha components
+   if (comp & 1) n = comp; else n = comp-1;
+   for (i=0; i < x*y; ++i) {
+      for (k=0; k < n; ++k) {
+         output[i*comp + k] = (float) pow(data[i*comp+k]/255.0, l2h_gamma) * l2h_scale;
+      }
+      if (k < comp) output[i*comp + k] = data[i*comp+k]/255.0f;
+   }
+   free(data);
+   return output;
+}
+
+#define float2int(x)   ((int) (x))
+static stbi_uc *hdr_to_ldr(float   *data, int x, int y, int comp)
+{
+   int i,k,n;
+   stbi_uc *output = (stbi_uc *) malloc(x * y * comp);
+   if (output == NULL) { free(data); return ep("outofmem", "Out of memory"); }
+   // compute number of non-alpha components
+   if (comp & 1) n = comp; else n = comp-1;
+   for (i=0; i < x*y; ++i) {
+      for (k=0; k < n; ++k) {
+         float z = (float) pow(data[i*comp+k]*h2l_scale_i, h2l_gamma_i) * 255 + 0.5f;
+         if (z < 0) z = 0;
+         if (z > 255) z = 255;
+         output[i*comp + k] = float2int(z);
+      }
+      if (k < comp) {
+         float z = data[i*comp+k] * 255 + 0.5f;
+         if (z < 0) z = 0;
+         if (z > 255) z = 255;
+         output[i*comp + k] = float2int(z);
+      }
+   }
+   free(data);
+   return output;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -1777,10 +1997,11 @@ static void init_defaults(void)
    for (i=0; i <=  31; ++i)     default_distance[i] = 5;
 }
 
-static int parse_zlib(void)
+static int parse_zlib(int parse_header)
 {
    int final, type;
-   if (!parse_zlib_header()) return 0;
+   if (parse_header)
+      if (!parse_zlib_header()) return 0;
    num_bits = 0;
    code_buffer = 0;
    do {
@@ -1805,21 +2026,21 @@ static int parse_zlib(void)
    return 1;
 }
 
-static int do_zlib(char *obuf, int olen, int exp)
+static int do_zlib(char *obuf, int olen, int exp, int parse_header)
 {
    zout_start = obuf;
    zout       = obuf;
    zout_end   = obuf + olen;
    z_expandable = exp;
 
-   return parse_zlib();
+   return parse_zlib(parse_header);
 }
 
 char *stbi_zlib_decode_malloc_guesssize(int initial_size, int *outlen)
 {
    char *p = (char *) malloc(initial_size);
    if (p == NULL) return NULL;
-   if (do_zlib(p, initial_size, 1)) {
+   if (do_zlib(p, initial_size, 1, 1)) {
       *outlen = (int) (zout - zout_start);
       return zout_start;
    } else {
@@ -1839,11 +2060,37 @@ int stbi_zlib_decode_buffer(char *obuffer, int olen, char *ibuffer, int ilen)
 {
    zbuffer = (uint8 *) ibuffer;
    zbuffer_end = (uint8 *) ibuffer + ilen;
-   if (do_zlib(obuffer, olen, 0))
+   if (do_zlib(obuffer, olen, 0, 1))
       return (int) (zout - zout_start);
    else
       return -1;
 }
+
+char *stbi_zlib_decode_noheader_malloc(char *buffer, int len, int *outlen)
+{
+   char *p = (char *) malloc(16384);
+   if (p == NULL) return NULL;
+   zbuffer = (uint8 *) buffer;
+   zbuffer_end = (uint8 *) buffer+len;
+   if (do_zlib(p, 16384, 1, 0)) {
+      *outlen = (int) (zout - zout_start);
+      return zout_start;
+   } else {
+      free(zout_start);
+      return NULL;
+   }
+}
+
+int stbi_zlib_decode_noheader_buffer(char *obuffer, int olen, char *ibuffer, int ilen)
+{
+   zbuffer = (uint8 *) ibuffer;
+   zbuffer_end = (uint8 *) ibuffer + ilen;
+   if (do_zlib(obuffer, olen, 0, 0))
+      return (int) (zout - zout_start);
+   else
+      return -1;
+}
+
 // public domain "baseline" PNG decoder   v0.10  Sean Barrett 2006-11-18
 //    simple implementation
 //      - only 8-bit samples
@@ -2093,6 +2340,7 @@ static int parse_png_file(int scan, int req_comp)
                if (scan == SCAN_header) { img_n = 4; return 1; }
                if (pal_len == 0) return e("tRNS before PLTE","Corrupt PNG");
                if (c.length > pal_len) return e("bad tRNS len","Corrupt PNG");
+               pal_img_n = 4;
                for (i=0; i < c.length; ++i)
                   palette[i*4+3] = get8u();
             } else {
@@ -2343,8 +2591,8 @@ static stbi_uc *bmp_load(int *x, int *y, int *comp, int req_comp)
    if (get16le() != 1) return 0;
    bpp = get16le();
    if (bpp == 1) return ep("monochrome", "BMP type not supported: 1-bit");
-   flip_vertically = img_y > 0;
-   img_y = abs(img_y);
+   flip_vertically = ((int) img_y) > 0;
+   img_y = abs((int) img_y);
    if (hsz == 12) {
       if (bpp < 24)
          psize = (offset - 14 - 24) / 3;
@@ -2518,7 +2766,7 @@ stbi_uc *stbi_bmp_load             (char *filename,           int *x, int *y, in
    stbi_uc *data;
    FILE *f = fopen(filename, "rb");
    if (!f) return NULL;
-   data = bmp_load(x,y,comp,req_comp);
+   data = stbi_bmp_load_from_file(f, x,y,comp,req_comp);
    fclose(f);
    return data;
 }
@@ -2800,7 +3048,7 @@ stbi_uc *stbi_tga_load             (char *filename,           int *x, int *y, in
    stbi_uc *data;
    FILE *f = fopen(filename, "rb");
    if (!f) return NULL;
-   data = tga_load(x,y,comp,req_comp);
+   data = stbi_tga_load_from_file(f, x,y,comp,req_comp);
    fclose(f);
    return data;
 }
@@ -2818,6 +3066,210 @@ stbi_uc *stbi_tga_load_from_memory (stbi_uc *buffer, int len, int *x, int *y, in
    return tga_load(x,y,comp,req_comp);
 }
 
+// *************************************************************************************************
+// Radiance RGBE HDR loader
+// originally by Nicolas Schulz
+#ifndef STBI_NO_HDR
+static int hdr_test(void)
+{
+   char *signature = "#?RADIANCE\n";
+   int i;
+   for (i=0; signature[i]; ++i)
+      if (get8() != signature[i])
+         return 0;
+	return 1;
+}
+
+int stbi_hdr_test_memory(stbi_uc *buffer, int len)
+{
+	start_mem(buffer, len);
+	return hdr_test();
+}
+
+#ifndef STBI_NO_STDIO
+int stbi_hdr_test_file(FILE *f)
+{
+   int r,n = ftell(f);
+   start_file(f);
+   r = hdr_test();
+   fseek(f,n,SEEK_SET);
+   return r;
+}
+#endif
+
+#define HDR_BUFLEN  1024
+static char *hdr_gettoken(char *buffer)
+{
+   int len=0;
+	char *s = buffer, c = '\0';
+
+   c = get8();
+
+	while (!at_eof() && c != '\n') {
+		buffer[len++] = c;
+      if (len == HDR_BUFLEN-1) {
+         // flush to end of line
+         while (!at_eof() && get8() != '\n')
+            ;
+         break;
+      }
+      c = get8();
+	}
+
+   buffer[len] = 0;
+	return buffer;
+}
+
+static void hdr_convert(float *output, stbi_uc *input, int req_comp)
+{
+	if( input[3] != 0 ) {
+      float f1;
+		// Exponent
+		f1 = (float) ldexp(1.0f, input[3] - (int)(128 + 8));
+      if (req_comp <= 2)
+         output[0] = (input[0] + input[1] + input[2]) * f1 / 3;
+      else {
+         output[0] = input[0] * f1;
+         output[1] = input[1] * f1;
+         output[2] = input[2] * f1;
+      }
+      if (req_comp == 2) output[1] = 1;
+      if (req_comp == 4) output[3] = 1;
+	} else {
+      switch (req_comp) {
+         case 4: output[3] = 255; /* fallthrough */
+         case 3: output[0] = output[1] = output[2] = 0;
+                 break;
+         case 2: output[1] = 255; /* fallthrough */
+         case 1: output[0] = 0;
+                 break;
+      }
+	}
+}
+
+
+static float *hdr_load(int *x, int *y, int *comp, int req_comp)
+{
+   char buffer[HDR_BUFLEN];
+	char *token;
+	int valid = 0;
+	int width, height;
+   stbi_uc *scanline;
+	float *hdr_data;
+	int len;
+	unsigned char count, value;
+	int i, j, k, c1,c2, z;
+
+
+	// Check identifier
+	if (strcmp(hdr_gettoken(buffer), "#?RADIANCE") != 0)
+		return ep("not HDR", "Corrupt HDR image");
+	
+	// Parse header
+	while(1) {
+		token = hdr_gettoken(buffer);
+      if (token[0] == 0) break;
+		if (strcmp(token, "FORMAT=32-bit_rle_rgbe") == 0) valid = 1;
+   }
+
+	if (!valid)    return ep("unsupported format", "Unsupported HDR format");
+
+   // Parse width and height
+   // can't use sscanf() if we're not using stdio!
+   token = hdr_gettoken(buffer);
+   if (strncmp(token, "-Y ", 3))  return ep("unsupported data layout", "Unsupported HDR format");
+   token += 3;
+   height = strtol(token, &token, 10);
+   while (*token == ' ') ++token;
+   if (strncmp(token, "+X ", 3))  return ep("unsupported data layout", "Unsupported HDR format");
+   token += 3;
+   width = strtol(token, NULL, 10);
+
+	*x = width;
+	*y = height;
+
+   *comp = 3;
+	if (req_comp == 0) req_comp = 3;
+
+	// Read data
+	hdr_data = (float *) malloc(height * width * req_comp * sizeof(float));
+
+	// Load image data
+   // image data is stored as some number of sca
+	if( width < 8 || width >= 32768) {
+		// Read flat data
+      for (j=0; j < height; ++j) {
+         for (i=0; i < width; ++i) {
+            stbi_uc rgbe[4];
+           main_decode_loop:
+            getn(rgbe, 4);
+            hdr_convert(hdr_data + j * width * req_comp + i * req_comp, rgbe, req_comp);
+         }
+      }
+	} else {
+		// Read RLE-encoded data
+		scanline = NULL;
+
+		for (j = 0; j < height; ++j) {
+         c1 = get8();
+         c2 = get8();
+         len = get8();
+         if (c1 != 2 || c2 != 2 || (len & 0x80)) {
+            // not run-length encoded, so we have to actually use THIS data as a decoded
+            // pixel (note this can't be a valid pixel--one of RGB must be >= 128)
+            stbi_uc rgbe[4] = { c1,c2,len, get8() };
+            hdr_convert(hdr_data, rgbe, req_comp);
+            i = 1;
+            j = 0;
+            free(scanline);
+            goto main_decode_loop; // yes, this is fucking insane; blame the fucking insane format
+         }
+         len <<= 8;
+         len |= get8();
+         if (len != width) { free(hdr_data); free(scanline); return ep("invalid decoded scanline length", "corrupt HDR"); }
+         if (scanline == NULL) scanline = (stbi_uc *) malloc(width * 4);
+				
+			for (k = 0; k < 4; ++k) {
+				i = 0;
+				while (i < width) {
+					count = get8();
+					if (count > 128) {
+						// Run
+						value = get8();
+                  count -= 128;
+						for (z = 0; z < count; ++z)
+							scanline[i++ * 4 + k] = value;
+					} else {
+						// Dump
+						for (z = 0; z < count; ++z)
+							scanline[i++ * 4 + k] = get8();
+					}
+				}
+			}
+         for (i=0; i < width; ++i)
+            hdr_convert(hdr_data+(j*width + i)*req_comp, scanline + i*4, req_comp);
+		}
+      free(scanline);
+	}
+
+   return hdr_data;
+}
+
+#ifndef STBI_NO_STDIO
+float *stbi_hdr_load_from_file(FILE *f, int *x, int *y, int *comp, int req_comp)
+{
+   start_file(f);
+   return hdr_load(x,y,comp,req_comp);
+}
+#endif
+
+float *stbi_hdr_load_from_memory(stbi_uc *buffer, int len, int *x, int *y, int *comp, int req_comp)
+{
+   start_mem(buffer, len);
+   return hdr_load(x,y,comp,req_comp);
+}
+
+#endif // STBI_NO_HDR
 
 /////////////////////// write image ///////////////////////
 
