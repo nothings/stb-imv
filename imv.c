@@ -17,10 +17,12 @@
 */
 
 // Set section alignment to minimize alignment overhead
+
+#if (_MSC_VER < 1300)
 #pragma comment(linker, "/FILEALIGN:0x200")
+#endif
 
 #define _WIN32_WINNT 0x0500
-//#define WINVER 0x0500   // produces an annoying warning message, so we do it the hard way
 #include <windows.h>
 #include <stdio.h>
 #include <time.h>
@@ -30,18 +32,37 @@
 #define STB_DEFINE
 #include "stb.h"          /*     http://nothings.org/stb.h         */
 
+// general configuration options
+
+#ifndef USE_STBI
+#define USE_STBI 1
+#endif
+
+#ifndef USE_GDIPLUS
+#define USE_GDIPLUS 1
+#endif
+
+#ifndef USE_FREEIMAGE
+#define USE_FREEIMAGE 1
+#endif
+
+#ifndef ALLOW_RECOLORING
+#define ALLOW_RECOLORING 1
+#endif
+
+// implement USE_STBI
+
+#if USE_STBI
 #define STBI_FAILURE_USERMSG
 #define STBI_NO_STDIO
+#define STBI_NO_WRITE
 #include "stb_image.c"    /*     http://nothings.org/stb_image.c   */
+#endif 
 
 #include "resource.h"
 
 typedef int Bool;
 
-// general configuration options
-
-#define USE_GDIPLUS
-#define USE_FREEIMAGE
 
 // size of border in pixels
 #define FRAME   3
@@ -343,7 +364,9 @@ static unsigned char alpha_background[2][3] =
 
 // given raw decoded data from stbi_load, make it into a proper Image (e.g. creating a
 // windows-compatible bitmap with 4-byte aligned rows and BGR color order)
+#if ALLOW_RECOLORING
 float lmin=0,lmax=1;
+#endif
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL image_loaded_as_rgb, int image_n)
 {
    int i,j,k=0;
@@ -364,6 +387,7 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
             image_data[k+2] = t;
          }
 
+         #if ALLOW_RECOLORING
          if (lmin > 0 || lmax < 1) {
             int c;
             for (c=0; c < 3; ++c) {
@@ -371,6 +395,7 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
                image_data[k+c] = stb_clamp(z, 0, 255);
             }
          }
+         #endif
 
          #if BPP==4
          // if image had an alpha channel, pre-blend with background
@@ -1792,7 +1817,9 @@ int reg_set(char *str, void *data, int len)
    return (ERROR_SUCCESS == RegSetValueEx(zreg, str, 0, REG_BINARY, data, len));
 }
 
+#ifdef USE_STBI
 int only_stbi=FALSE;
+#endif
 
 // we use very short strings for these to avoid wasting space, since
 // people shouldn't be mucking with them directly anyway!
@@ -1806,7 +1833,9 @@ void reg_save(void)
       reg_set("cache", &temp, 4);
       reg_set("lfs", &label_font_height, 4);
       reg_set("label", &show_label, 4);
+#if USE_STBI
       reg_set("stbi", &only_stbi, 4);
+#endif
       reg_set("border", &show_frame, 4);
       reg_set("stime", &delay_time, 4);
       RegCloseKey(zreg);
@@ -1824,7 +1853,9 @@ void reg_load(void)
       reg_get("label", &show_label, 4);
       if (reg_get("cache", &temp, 4))
          max_cache_bytes = temp << 20;
+#if USE_STBI
       reg_get("stbi", &only_stbi, 4);
+#endif
       reg_get("border", &show_frame, 4);
       extra_border = show_frame;
       reg_get("stime", &delay_time, 4);
@@ -1924,8 +1955,10 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
       case WM_INITDIALOG: {
          // pick a random preference image
          int n = ((rand() >> 6) % 3);
-         int x,y,i,j,k;
+         int x, y;
          // decode it
+#if USE_STBI
+         int i, j, k;
          uint8 *data = stbi_load_from_memory(rom_images[n],2000,&x,&y,NULL,1);
          pref_image = bmp_alloc(x,y);
          if (data && pref_image) {
@@ -1936,11 +1969,22 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                      pref_image->pixels[pref_image->stride*j + BPP*i + k] = data[j*x+i];
          }
          if (data) free(data);
-
+#else
+         int channels;
+         Bool loaded_as_rgb;
+         uint8 *data = imv_decode_from_memory(rom_images[n], 2000, &x, &y, &loaded_as_rgb, &channels, BPP);
+         assert(channels == BPP);
+         pref_image = bmp_alloc(x, y);
+         pref_image->pixels = data;
+#endif
          // copy preferences into dialog
          SendMessage(GetDlgItem(hdlg, DIALOG_upsample), BM_SETCHECK, upsample_cubic, 0);
          SendMessage(GetDlgItem(hdlg, DIALOG_showlabel), BM_SETCHECK, show_label, 0);
+#if USE_STBI
          SendMessage(GetDlgItem(hdlg, DIALOG_stbi_only), BM_SETCHECK, only_stbi, 0);
+#else
+         EnableWindow(GetDlgItem(hdlg, DIALOG_stbi_only), FALSE);
+#endif
          SendMessage(GetDlgItem(hdlg, DIALOG_showborder), BM_SETCHECK, show_frame, 0);
          for (i=0; i < 6; ++i)
             set_dialog_number(DIALOG_r1+i, alpha_background[0][i]);
@@ -2002,7 +2046,9 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                delay_time = get_dialog_numberf(DIALOG_slideshowtime);
                upsample_cubic = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_upsample ), BM_GETCHECK,0,0);
                show_label     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showlabel), BM_GETCHECK,0,0);
+#if USE_STBI
                only_stbi      = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_stbi_only), BM_GETCHECK,0,0);
+#endif USE_STBI
                new_border     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showborder),BM_GETCHECK,0,0);
 
                // if alpha_background changed, clear the cache of any images that used it                
@@ -2234,10 +2280,12 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                   KillTimer(win,0);
                break;
 
+            #if ALLOW_RECOLORING
             case '[': lmax = stb_clamp(lmax-1.0f/32, 0,1); clear_cache(0); advance(0); break;
             case ']': lmax = stb_clamp(lmax+1.0f/32, 0,1); clear_cache(0); advance(0); break;
             case '{': lmin = stb_clamp(lmin-1.0f/32, 0,1); clear_cache(0); advance(0); break;
             case '}': lmin = stb_clamp(lmin+1.0f/32, 0,1); clear_cache(0); advance(0); break;
+            #endif
 
             default:
                return 1;
@@ -2391,7 +2439,7 @@ int cur_is_current(void)
    return !strcmp(cur_filename, source_c->filename);
 }
 
-#ifdef USE_GDIPLUS
+#if USE_GDIPLUS
 typedef ULONG ULONG_PTR;
 
 static Bool GdiplusPresent;
@@ -2402,7 +2450,7 @@ static Bool LoadGdiplus(void);
 //#define ICM_SUFFIX "ICM"
 #endif
 
-#ifdef USE_FREEIMAGE
+#if USE_FREEIMAGE
 static int FreeImagePresent;
 static int LoadFreeImage(void);
 #endif
@@ -2441,19 +2489,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    // we can't do this statically with the current build process
    strcat(helptext_center, VERSION);
 
-#ifdef USE_GDIPLUS
+#if USE_GDIPLUS
    if (LoadGdiplus()) {
        strcat(helptext_center, "\nUsing GDI+");
-       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;*.hdr;*.gif;*.ico;*.jng;*.tiff\0";
+       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;"
+       #if USE_STBI
+            "*.hdr;"
+       #endif
+            "*.gif;*.ico;*.jng;*.tiff\0";
    }
 #endif
 
    // now try to LoadFreeImage _after_ we've already loaded the prefs;
    // that way only_stbi can be used to suppress errors
-#ifdef USE_FREEIMAGE
+#if USE_FREEIMAGE
    if (LoadFreeImage()) {
       strcat(helptext_center, "\nUsing FreeImage.dll: http://freeimage.sourceforge.net");
-      open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.hdr;*.dds;*.gif;*.ico;*.jng;*.lbm;*.pcx;*.ppm;*.psd;*.tga;*.tiff\0";
+      open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;"
+             #if USE_STBI
+                    "*.hdr;"
+             #endif
+                    "*.dds;*.gif;*.ico;*.jng;*.lbm;*.pcx;*.ppm;*.psd;*.tiff\0";
    }
 #endif
    assert(helptext_center[sizeof(helptext_center)-1]==0);
@@ -3308,7 +3364,7 @@ static char  *imv_failure_reason(void)
    return imv_failure_string;
 }
 
-#ifdef USE_GDIPLUS
+#if USE_GDIPLUS
 
 
 #pragma pack(push,8)
@@ -3463,14 +3519,18 @@ static Bool LoadGdiplus(void)
    GdipBitmapLockBits = (GdipBitmapLockBitsProc)GpFunc("GdipBitmapLockBits");
    GdipBitmapUnlockBits = (GdipBitmapUnlockBitsProc)GpFunc("GdipBitmapUnlockBits");
    if (!GdiplusPresent) {
+#if USE_STBI
       if (!only_stbi)
+#endif
          error("Invalid GdiPlus.dll; disabling GDI+ support.");
    } else {
       // no need to use GDI+ backup thread, or to call the hook methods in gpStartupOutput
       GdiplusStartupInput gpStartupInput = { 1, NULL, TRUE, FALSE };
       if (GdiplusStartup(&GpToken, &gpStartupInput, &gpStartupOutput) != GpOk) {
          GdiplusPresent = FALSE;
+#if USE_STBI
          if (!only_stbi)
+#endif
             error("Failed to initialize GdiPlus.dll; disabling GDI+ support.");
       }
    }
@@ -3539,7 +3599,7 @@ liwgExit:
 
 #endif
 
-#ifdef USE_FREEIMAGE
+#if USE_FREEIMAGE
 
 // FreeImage types
 
@@ -3635,7 +3695,9 @@ static int LoadFreeImage(void)
    FreeImage_IsTransparent = (freeimage_istransparent *)fifunc("_FreeImage_IsTransparent@4");
 
    if (!FreeImagePresent) {
+#if USE_STBI
       if (!only_stbi)
+#endif
          error("Invalid FreeImage.dll; disabling FreeImage support.");
    } else
       FreeImage_SetOutputMessage(FreeImageErrorHandler);
@@ -3683,6 +3745,7 @@ static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* 
    // prefer STBI over everything else
 
    *loaded_as_rgb = FALSE;
+#if USE_STBI
    res = stbi_load_from_memory(mem, len, x, y, n, n_req);
    if (res) {
        *loaded_as_rgb = TRUE;
@@ -3692,10 +3755,11 @@ static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* 
 
    if (only_stbi)
       return res;
+#endif
 
    // prefer GDI+ over FreeImage
 
-#ifdef USE_GDIPLUS
+#if USE_GDIPLUS
    if (GdiplusPresent) {
        res = LoadImageWithGdiplus(mem, len, x, y, n, n_req);
        if (res)
@@ -3705,7 +3769,7 @@ static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* 
 
    // FreeImage is the final fallback
 
-#ifdef USE_FREEIMAGE
+#if USE_FREEIMAGE
    if (FreeImagePresent) {
       FIMEMORY *fi = FreeImage_OpenMemory(mem,len);
       res = LoadImageWithFreeImage(fi, x, y, n, n_req);

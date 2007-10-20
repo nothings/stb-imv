@@ -13,6 +13,7 @@ rem # Make release directory
 
 mkdir ..\stb_imv
 copy vc6\release\stb_imv.exe ..\stb_imv\imv.exe
+copy "vc6\light release\stb_imv_light.exe" ..\stb_imv\imv_light.exe
 copy readme_binary.txt+notes.txt ..\stb_imv\readme.txt
 
 rem # Make tarball directory
