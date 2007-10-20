@@ -1,6 +1,10 @@
-  Version 0.96: Beta 8 ( )
+  Version 0.96: Beta 8 ( 2007-10-20 )
+    * feature: imv_light.exe - uses GDI+ only, not stb_image or FreeImage
+    * feature: press 's' for a primitive slideshow of current directory
+    * feature: HDR support in stb_image
     * feature: TGA support in stb_image
     * feature: save border choice to registry (expose in prefs)
+    * secret feature: use { } [ ] to rescale dark/light images
 
   Version 0.95: Beta 7 ( 2007-08-15 )
     * bugfix: minor stb_image.c fixes

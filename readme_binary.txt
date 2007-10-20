@@ -10,12 +10,17 @@ SOURCE
 
 INSTALLING
 
-  Put it somewhere on your path.
+  Put imv.exe somewhere on your path.
+
+  If you prefer to use a stripped-down version and you're sure you
+  have GDI+, use imv_light.exe, which is less than 2/3rds the size
+  of imv.exe.
 
 
 LAUNCHING
 
   Run on the commandline as:
+
      imv [imagefile]
 
   You can use 'open with' and it will do the right thing. You can
