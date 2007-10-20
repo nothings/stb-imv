@@ -16,6 +16,7 @@
     Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
+
 // Set section alignment to minimize alignment overhead
 
 #if (_MSC_VER < 1300)
