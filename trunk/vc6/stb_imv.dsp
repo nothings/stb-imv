@@ -20,6 +20,7 @@ CFG=stb_imv - Win32 Debug
 !MESSAGE "stb_imv - Win32 Release" (based on "Win32 (x86) Application")
 !MESSAGE "stb_imv - Win32 Debug" (based on "Win32 (x86) Application")
 !MESSAGE "stb_imv - Win32 Debug Opt" (based on "Win32 (x86) Application")
+!MESSAGE "stb_imv - Win32 Light Release" (based on "Win32 (x86) Application")
 !MESSAGE 
 
 # Begin Project
@@ -93,8 +94,8 @@ LINK32=link.exe
 # PROP BASE Target_Dir ""
 # PROP Use_MFC 0
 # PROP Use_Debug_Libraries 0
-# PROP Output_Dir "stb_imv___Win32_Debug_Opt"
-# PROP Intermediate_Dir "stb_imv___Win32_Debug_Opt"
+# PROP Output_Dir "Debug_Opt"
+# PROP Intermediate_Dir "Debug_Opt"
 # PROP Ignore_Export_Lib 0
 # PROP Target_Dir ""
 # ADD BASE CPP /nologo /G6 /MD /W3 /GX /O2 /D "WIN32" /D "NDEBUG" /D "_WINDOWS" /D "_MBCS" /FD /c
@@ -112,6 +113,35 @@ LINK32=link.exe
 # ADD BASE LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /nologo /subsystem:windows /machine:I386
 # ADD LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /nologo /subsystem:windows /debug /machine:I386
 
+!ELSEIF  "$(CFG)" == "stb_imv - Win32 Light Release"
+
+# PROP BASE Use_MFC 0
+# PROP BASE Use_Debug_Libraries 0
+# PROP BASE Output_Dir "stb_imv___Win32_Light_Release"
+# PROP BASE Intermediate_Dir "stb_imv___Win32_Light_Release"
+# PROP BASE Ignore_Export_Lib 0
+# PROP BASE Target_Dir ""
+# PROP Use_MFC 0
+# PROP Use_Debug_Libraries 0
+# PROP Output_Dir "Light_Release"
+# PROP Intermediate_Dir "Light_Release"
+# PROP Ignore_Export_Lib 0
+# PROP Target_Dir ""
+# ADD BASE CPP /nologo /G6 /MD /W3 /GX /O2 /Ob0 /D "NDEBUG" /D "WIN32" /D "_WINDOWS" /D "_MBCS" /FD /c
+# SUBTRACT BASE CPP /YX
+# ADD CPP /nologo /G6 /MD /W3 /GX /O2 /Ob0 /D "NDEBUG" /D "WIN32" /D "_WINDOWS" /D "_MBCS" /D USE_STBI=0 /D USE_FREEIMAGE=0 /D ALLOW_RECOLORING=0 /FD /c
+# SUBTRACT CPP /YX
+# ADD BASE MTL /nologo /D "NDEBUG" /mktyplib203 /win32
+# ADD MTL /nologo /D "NDEBUG" /mktyplib203 /win32
+# ADD BASE RSC /l 0x409 /d "NDEBUG"
+# ADD RSC /l 0x409 /d "NDEBUG"
+BSC32=bscmake.exe
+# ADD BASE BSC32 /nologo
+# ADD BSC32 /nologo
+LINK32=link.exe
+# ADD BASE LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib advapi32.lib winmm.lib /nologo /subsystem:windows /machine:I386
+# ADD LINK32 kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib advapi32.lib winmm.lib /nologo /subsystem:windows /machine:I386 /out:"Light_Release/stb_imv_light.exe"
+
 !ENDIF 
 
 # Begin Target
@@ -119,6 +149,7 @@ LINK32=link.exe
 # Name "stb_imv - Win32 Release"
 # Name "stb_imv - Win32 Debug"
 # Name "stb_imv - Win32 Debug Opt"
+# Name "stb_imv - Win32 Light Release"
 # Begin Source File
 
 SOURCE=..\imv.c
@@ -140,6 +171,11 @@ SOURCE=..\notes.txt
 # PROP Exclude_From_Build 1
 
 !ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug Opt"
+
+# PROP BASE Exclude_From_Build 1
+# PROP Exclude_From_Build 1
+
+!ELSEIF  "$(CFG)" == "stb_imv - Win32 Light Release"
 
 # PROP BASE Exclude_From_Build 1
 # PROP Exclude_From_Build 1
@@ -172,6 +208,11 @@ SOURCE=..\version.bat
 # PROP Exclude_From_Build 1
 
 !ELSEIF  "$(CFG)" == "stb_imv - Win32 Debug Opt"
+
+# PROP BASE Exclude_From_Build 1
+# PROP Exclude_From_Build 1
+
+!ELSEIF  "$(CFG)" == "stb_imv - Win32 Light Release"
 
 # PROP BASE Exclude_From_Build 1
 # PROP Exclude_From_Build 1
