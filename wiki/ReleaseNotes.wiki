@@ -8,6 +8,9 @@ This is a beta version, targetting the eventual milestones:
 
 = Release Notes =
 
+  Version 0.97: Beta 9 ( 2007-11-27 )
+    * bugfix: if starting path is unicode don't blow up trying to read the directory
+
   Version 0.96: Beta 8 ( 2007-10-20 )
     * feature: VC7 project files
     * feature: imv_light.exe - uses GDI+ only, not stb_image or FreeImage
