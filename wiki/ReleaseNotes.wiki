@@ -8,6 +8,11 @@ This is a beta version, targetting the eventual milestones:
 
 = Release Notes =
 
+  Version 0.98: Beta 10 ( 2008-01-31)
+    * bugfix: support BACK/FORWARD mouse buttons
+    * feature: custom .spk image-delta file format
+    * secret feature: recursive slideshows with clumsy UI using 'ctrl-R' and '.'
+
   Version 0.97: Beta 9 ( 2007-11-27 )
     * bugfix: if starting path is unicode don't blow up trying to read the directory
 
