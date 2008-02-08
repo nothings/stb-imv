@@ -8,8 +8,11 @@ This is a beta version, targetting the eventual milestones:
 
 = Release Notes =
 
-  Version 0.98: Beta 10 ( 2008-01-31)
-    * bugfix: support BACK/FORWARD mouse buttons
+  Version 0.99: Beta 11 ( 2008-02-07 )
+    * bugfix: further attempt to support BACK/FORWARD
+
+  Version 0.98: Beta 10 ( 2008-01-31 )
+    * bugfix: attempt to support BACK/FORWARD mouse buttons
     * feature: custom .spk image-delta file format
     * secret feature: recursive slideshows with clumsy UI using 'ctrl-R' and '.'
 
