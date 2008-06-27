@@ -11,7 +11,7 @@
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
 
-    You should have received a copy of the GNU General Public License
+    You should have received a copy of the GNU General Public License        star
     along with this program; if not, write to the Free Software
     Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
@@ -29,6 +29,8 @@
 #include <time.h>
 #include <string.h>
 #include <assert.h>
+#include <process.h>
+#include <math.h>
 
 #define STB_DEFINE
 #include "stb.h"          /*     http://nothings.org/stb.h         */
@@ -252,26 +254,6 @@ typedef struct
 // there can only be one pending command in flight
 volatile DiskCommand dc_shared;
 
-void *stb_file2(char *filename, size_t *length)
-{
-   FILE *f = fopen(filename, "rb");
-   char *buffer;
-   size_t len;
-   if (!f) return NULL;
-   len = stb_filelen(f);
-   buffer = (char *) malloc(len+2); // nul + extra
-   if (fread(buffer, 1, len, f) == len) {
-      if (length) *length = len;
-      buffer[len] = 0;
-   } else {
-      free(buffer);
-      buffer = NULL;
-   }
-   fclose(f);
-   return buffer;
-}
-
-
 // the disk loader sits in this loop forever
 void *diskload_task(void *p)
 {
@@ -367,10 +349,11 @@ static unsigned char alpha_background[2][3] =
 // windows-compatible bitmap with 4-byte aligned rows and BGR color order)
 #if ALLOW_RECOLORING
 float lmin=0,lmax=1;
+int mono;
 #endif
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL image_loaded_as_rgb, int image_n)
 {
-   int i,j,k=0;
+   int i,j,k,ymin=0,ymax=256*8-1;
    z->pixels = image_data;
    z->x = image_x;
    z->y = image_y;
@@ -378,6 +361,21 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
    z->frame = 0;
    z->had_alpha = (image_n==4);
 
+   #if ALLOW_RECOLORING
+   if (mono) {
+      k = 0;
+      for (j=0; j < image_y; ++j) {
+         for (i=0; i < image_x; ++i) {
+            int y = image_data[k+0]*5 + image_data[k+1]*9 + image_data[k+2]*2;
+            if (y < ymin) ymin = y;
+            if (y > ymax) ymax = y;
+            k += BPP;
+         }
+      }
+   }
+   #endif
+
+   k=0;
    for (j=0; j < image_y; ++j) {
       for (i=0; i < image_x; ++i) {
          // TODO: hoist branches outside of loops?
@@ -389,7 +387,13 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
          }
 
          #if ALLOW_RECOLORING
-         if (lmin > 0 || lmax < 1) {
+         if (mono) {
+            int y = image_data[k+0]*5 + image_data[k+1]*9 + image_data[k+2]*2;
+            int p = (int) stb_linear_remap(y, ymin, ymax, 0,255);
+            image_data[k+0] = p;
+            image_data[k+1] = p;
+            image_data[k+2] = p;
+         } else if (lmin > 0 || lmax < 1) {
             int c;
             for (c=0; c < 3; ++c) {
                int z = (int) stb_linear_remap(image_data[k+c], lmin*255,lmax*255, 0,255);
@@ -477,7 +481,7 @@ start:
    return best;
 }
 
-static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, BOOL *loaded_as_rgb, int *n, int n_req);
+static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, BOOL *loaded_as_rgb, int *n, int n_req, char *filename);
 static char  *imv_failure_reason(void);
 
 void *decode_task(void *p)
@@ -499,7 +503,7 @@ void *decode_task(void *p)
 
          // decode image
          o(("DECIDE: decoding %s\n", f->filename));
-         data = imv_decode_from_memory(f->filedata, f->len, &x, &y, &loaded_as_rgb, &n, BPP);
+         data = imv_decode_from_memory(f->filedata, f->len, &x, &y, &loaded_as_rgb, &n, BPP, f->filename);
          o(("DECODE: decoded %s\n", f->filename));
 
          // free copy of data from disk, which we don't need anymore
@@ -604,7 +608,7 @@ Image *cur;
 // the filename for the currently displayed image
 char *cur_filename;
 int show_help=0;
-int downsample_cubic = 0;
+int downsample_cubic = TRUE;
 int upsample_cubic = TRUE;
 
 int cur_loc = -1; // offset within the current list of files
@@ -706,8 +710,10 @@ void build_label_font(void)
    label_font = CreateFontIndirect(&lf);
 }
 
+char path_to_file[4096];
 int show_frame = TRUE;   // show border or not?
 int show_label = FALSE;  // display the help text or not
+int recursive = FALSE;
 
 // WM_PAINT, etc.
 void display(HWND win, HDC hdc)
@@ -760,7 +766,10 @@ void display(HWND win, HDC hdc)
       char buffer[1024];
       char *name = cur_filename ? cur_filename : "(none)";
       if (fileinfo) {
-         sprintf(buffer, "%s ( %d / %d )", name, cur_loc+1, stb_arr_len(fileinfo));
+         if (recursive)
+            sprintf(buffer, "%s ( %d / %d - %s)", name, cur_loc+1, stb_arr_len(fileinfo), path_to_file);
+         else
+            sprintf(buffer, "%s ( %d / %d )", name, cur_loc+1, stb_arr_len(fileinfo));
          name = buffer;
       }
 
@@ -1154,7 +1163,6 @@ void toggle_display(void)
 // if you switch directories, the cache will still have
 // images from the old directory, and if you switch back
 // before they're flushed, it will still be valid
-char path_to_file[4096];
 char *filename;   // @TODO: gah, we have cur_filename AND filename. and filename is being set dumbly!
 
 // stb_sdict is a string dictionary (strings as keys, void * as values)
@@ -1270,7 +1278,7 @@ int StringCompareSort(const void *p, const void *q)
    return StringCompare(*(char **) p, *(char **) q);
 }
 
-char *open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;*.hdr\0";
+char *open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;*.hdr;*.spk\0";
 
 // build a filelist for the current directory
 void init_filelist(void)
@@ -1285,7 +1293,11 @@ void init_filelist(void)
       free_fileinfo();
    }
 
-   image_files = stb_readdir_files_mask(path_to_file, open_filter + 12);
+   if (recursive)
+      image_files = stb_readdir_recursive(path_to_file, open_filter + 12);
+   else
+      image_files = stb_readdir_files_mask(path_to_file, open_filter + 12);
+
    if (image_files == NULL) { error("Error: couldn't read directory."); exit(0); }
    qsort(image_files, stb_arr_len(image_files), sizeof(*image_files), StringCompareSort);
 
@@ -1546,15 +1558,34 @@ void advance(int dir)
 //   with 'advance'
 static char filenamebuffer[4096];
 
+void stb_from_utf8_multi(stb__wchar *out, char *in, int max_out)
+{
+   // an array of \0 strings terminated by \0\0
+   for(;;) {
+      int nout;
+      stb_from_utf8(out, in, max_out);
+      nout = wcslen(out)+1; // number of output characters consumed
+      max_out -= nout;
+      out += nout;
+      if (in[0] == 0) return;
+      in += strlen(in)+1;
+   }
+}
+
 void open_file(void)
 {
-   OPENFILENAME o = { sizeof(o) };
-   o.lpstrFilter = open_filter;
-   o.lpstrFile = filenamebuffer;
-   filenamebuffer[0] = 0;
-   o.nMaxFile = sizeof(filenamebuffer);
-   if (!GetOpenFileName(&o))
+   stb__wchar buf1[1024], buf2[4096];
+   OPENFILENAMEW o = { sizeof(o) };
+
+   stb_from_utf8_multi(buf1, open_filter, sizeof(buf1));
+   o.lpstrFilter = buf1;
+   o.lpstrFile = buf2;
+   buf2[0] = 0;
+   o.nMaxFile = sizeof(buf2);
+   o.Flags = OFN_HIDEREADONLY;
+   if (!GetOpenFileNameW(&o))
       return;
+   stb_to_utf8(filenamebuffer, buf2, sizeof(filenamebuffer));
    filename = filenamebuffer;
    stb_fixpath(filename);
    stb_splitpath(path_to_file, filename, STB_PATH);
@@ -1818,7 +1849,7 @@ int reg_set(char *str, void *data, int len)
    return (ERROR_SUCCESS == RegSetValueEx(zreg, str, 0, REG_BINARY, data, len));
 }
 
-#ifdef USE_STBI
+#if USE_STBI
 int only_stbi=FALSE;
 #endif
 
@@ -2049,7 +2080,7 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                show_label     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showlabel), BM_GETCHECK,0,0);
 #if USE_STBI
                only_stbi      = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_stbi_only), BM_GETCHECK,0,0);
-#endif USE_STBI
+#endif //USE_STBI
                new_border     = BST_CHECKED == SendMessage(GetDlgItem(hdlg,DIALOG_showborder),BM_GETCHECK,0,0);
 
                // if alpha_background changed, clear the cache of any images that used it                
@@ -2102,14 +2133,14 @@ void performance_test(void)
 {
    int t1,t2;
    int len,i;
-   uint8 *buffer = stb_file2(cur_filename, &len);
+   uint8 *buffer = stb_file(cur_filename, &len);
    if (buffer == NULL) return;
    
    t1 = timeGetTime();
 
    for (i=0; i < 50; ++i) {
       int x,y,n;
-      uint8 *result = imv_decode_from_memory(buffer, len, &x, &y, &n, 4);
+      uint8 *result = imv_decode_from_memory(buffer, len, &x, &y, &n, 4, cur_filename);
       free(result);
    }
 
@@ -2134,6 +2165,15 @@ void performance_test(void)
 #define VK_SLASH     0xbf
 #endif
 
+#ifndef WM_APPCOMMAND
+#define WM_APPCOMMAND                   0x0319
+#define APPCOMMAND_BROWSER_BACKWARD       1
+#define APPCOMMAND_BROWSER_FORWARD        2
+#define APPCOMMAND_OPEN                   30
+#define FAPPCOMMAND_MASK  0xF000
+#define GET_APPCOMMAND_LPARAM(lParam) ((short)(HIWORD(lParam) & ~FAPPCOMMAND_MASK))
+#endif
+
 // ok, surely windows doesn't BY DESIGN require you to store your
 // HINSTANCE in a global, does it? but I couldn't find a 'GetCurrentInstance'
 // or some such to tell you what instance a thread came from. But the
@@ -2156,7 +2196,8 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          // whether to show it or not; we do that by scanning the whole cache
          // to see what the most recently-browsed-and-displayable image is,
          // and store that in 'best'.
-         int best_lru=0,i;
+         int i;
+         // int best_lru=0;
          volatile ImageFile *best = NULL;
          for (i=0; i < MAX_CACHED_IMAGES; ++i) {
             if (cache[i].lru > best_lru) {
@@ -2169,7 +2210,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
          }
          // if the most recently-browsed and displayable image is an error, show it
-         if (best->status == LOAD_error_reading || best->status == LOAD_error_decoding)
+         if (best && (best->status == LOAD_error_reading || best->status == LOAD_error_decoding))
             set_error(best);
 
          break;
@@ -2243,6 +2284,23 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          return 0;
       }
 
+      case WM_APPCOMMAND: {
+         switch (GET_APPCOMMAND_LPARAM(lParam)) {
+            case APPCOMMAND_BROWSER_FORWARD:
+               advance(1);
+               break;
+            case APPCOMMAND_BROWSER_BACKWARD:
+               advance(-1);
+               break;
+            case APPCOMMAND_OPEN:
+               open_file();
+               break;
+            default:
+               return DefWindowProc (hWnd, uMsg, wParam, lParam);
+         }
+         break;
+      }
+
       #define MY_SHIFT (1 << 16)
       #define MY_CTRL  (1 << 17)
       #define MY_ALT   (1 << 18)
@@ -2281,11 +2339,23 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                   KillTimer(win,0);
                break;
 
+            case '.': {
+               char buffer[512];
+               strcpy(buffer, path_to_file);
+               if (buffer[strlen(buffer)-1] == '/')
+                  buffer[strlen(buffer)-1] = 0;
+               stb_splitpath(path_to_file, buffer, STB_PATH);
+               if (recursive)
+                  init_filelist();
+               break;
+            }
+
             #if ALLOW_RECOLORING
             case '[': lmax = stb_clamp(lmax-1.0f/32, 0,1); clear_cache(0); advance(0); break;
             case ']': lmax = stb_clamp(lmax+1.0f/32, 0,1); clear_cache(0); advance(0); break;
             case '{': lmin = stb_clamp(lmin-1.0f/32, 0,1); clear_cache(0); advance(0); break;
             case '}': lmin = stb_clamp(lmin+1.0f/32, 0,1); clear_cache(0); advance(0); break;
+            case 'm': mono = !mono; clear_cache(0); advance(0); break;
             #endif
 
             default:
@@ -2361,6 +2431,34 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                EmptyClipboard();
                SetClipboardData(CF_TEXT, hMem);
                CloseClipboard();
+               break;
+            }
+
+            case 'R' | MY_CTRL: {
+               recursive = !recursive;
+               init_filelist();
+               break;
+            }
+
+            case 'R' | MY_ALT: {
+               static int init;
+               int n;
+               char buffer[512], **subdir;
+               recursive = TRUE;
+               strcpy(buffer, path_to_file);
+               if (buffer[strlen(buffer)-1] == '/')
+                  buffer[strlen(buffer)-1] = 0;
+               stb_splitpath(path_to_file, buffer, STB_PATH);
+               subdir = stb_readdir_subdirs(path_to_file);
+               if (!init) {
+                  init = 1;
+                  stb_srand(time(NULL));
+               }
+               n = stb_rand() % stb_arr_len(subdir);
+               strcpy(path_to_file, subdir[n]);
+               stb_readdir_free(subdir);
+               init_filelist();
+               advance(0);
                break;
             }
 
@@ -2458,14 +2556,18 @@ static int LoadFreeImage(void);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+   LPWSTR       cmdline = GetCommandLineW();
    int argc;
-   char **argv = stb_tokens_quoted(lpCmdLine, " ", &argc);
+   LPWSTR       *argv = CommandLineToArgvW(cmdline, &argc);
+   //int argc;
+   //char **argv = stb_tokens_quoted(lpCmdLine, " ", &argc);
    char filenamebuffer[4096];
 
    MEMORYSTATUS mem;
    MSG          msg;
    WNDCLASSEX   wndclass = { sizeof(wndclass) };
    HWND         hWnd;
+
 
    // initial loaded image
    int image_x, image_y, image_loaded_as_rgb, image_n;
@@ -2493,9 +2595,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 #if USE_GDIPLUS
    if (LoadGdiplus()) {
        strcat(helptext_center, "\nUsing GDI+");
-       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;"
+       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga"
        #if USE_STBI
-            "*.hdr;"
+            "*.hdr;*.spk;"
        #endif
             "*.gif;*.ico;*.jng;*.tiff\0";
    }
@@ -2508,7 +2610,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
       strcat(helptext_center, "\nUsing FreeImage.dll: http://freeimage.sourceforge.net");
       open_filter = "Image Files\0*.jpg;*.jpeg;*.png;*.bmp;*.tga;"
              #if USE_STBI
-                    "*.hdr;"
+                    "*.hdr;*.spk;"
              #endif
                     "*.dds;*.gif;*.ico;*.jng;*.lbm;*.pcx;*.ppm;*.psd;*.tiff\0";
    }
@@ -2539,20 +2641,37 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
    srand(time(NULL));
 
-   if (argc < 1) {
-      // if run with no arguments, get an initial filename
-      OPENFILENAME o = { sizeof(o) };
-      o.lpstrFilter = open_filter;
-      o.lpstrFile = filenamebuffer;
-      filenamebuffer[0] = 0;
-      o.nMaxFile = sizeof(filenamebuffer);
-      if (!GetOpenFileName(&o))
+   if (argc < 2) {
+      stb__wchar buf1[1024], buf2[4096];
+      OPENFILENAMEW o = { sizeof(o) };
+
+      stb_from_utf8_multi(buf1, open_filter, sizeof(buf1));
+      o.lpstrFilter = buf1;
+      o.lpstrFile = buf2;
+      buf2[0] = 0;
+      o.nMaxFile = sizeof(buf2);
+      if (!GetOpenFileNameW(&o))
          return 0;
+      stb_to_utf8(filenamebuffer, buf2, sizeof(filenamebuffer));
       filename = filenamebuffer;
    } else {
-      // else grab the first one... what about additional names? should
-      // we launch more windows? or initialize the filelist to them, I guess?
-      filename = argv[0];
+      DWORD p = GetFileAttributesW(argv[1]);
+      if (p != 0xffffffff && (p & FILE_ATTRIBUTE_DIRECTORY)) {
+         filename = "";
+         recursive = 1;
+         stb_to_utf8(path_to_file, argv[1], sizeof(path_to_file));
+         init_filelist();
+         if (stb_arr_len(fileinfo))
+            filename = fileinfo[0].filename;
+         else {
+            error("No image files in folder.");
+         }
+      } else {
+         // else grab the first one... what about additional names? should
+         // we launch more windows? or initialize the filelist to them, I guess?
+         stb_to_utf8(filenamebuffer, argv[1], sizeof(filenamebuffer));
+         filename = filenamebuffer;
+      }
    }
    
    // allocate worker threads
@@ -2562,11 +2681,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
    {
       char *why=NULL;
       int len;
-      uint8 *data = stb_file2(filename, &len);
+      uint8 *data = stb_file(filename, &len);
       if (!data)
          why = "Couldn't open file";
       else {
-         image_data = imv_decode_from_memory(data, len, &image_x, &image_y, &image_loaded_as_rgb, &image_n, BPP);
+         image_data = imv_decode_from_memory(data, len, &image_x, &image_y, &image_loaded_as_rgb, &image_n, BPP, filename);
          if (image_data == NULL)
             why = imv_failure_reason();
       }
@@ -2955,6 +3074,7 @@ static Color lerp(Color dest, Color src, uint8 a)
 //   out = (a*t+b)*t^2 + (c*t+d)*1
 
 MMX int16 three[4] = { 3,3,3,3 };
+MMX int16 round[4] = { 128,128,128,128 };
 
 static void cubic_interpolate_span(uint32 *dest,
                                    uint32 *x0, uint32 *x1, uint32 *x2, uint32 *x3,
@@ -2982,6 +3102,7 @@ static void cubic_interpolate_span(uint32 *dest,
       punpcklbw mm7,mm7   // 0,0,0,0,lerp,lerp,lerp,lerp
       punpcklbw mm7,mm7   // 8xlerp. (This meakes each unsigned lerp value 0..15)
       psrlw     mm7,1     // slide away from the sign bit; 1.15 lerp
+      // clearer way to thinkg of this: mm7 contains t/2
    } looptop: __asm {
 
       movd  mm1,[eax]
@@ -2995,6 +3116,12 @@ static void cubic_interpolate_span(uint32 *dest,
       punpcklbw mm2,mm0   // mm2 = x1
       punpcklbw mm3,mm0   // mm3 = x2
 
+      // extra precision
+      psllw     mm1,2
+      psllw     mm2,2
+      psllw     mm3,2
+      psllw     mm4,2
+
       add       ecx,step_src
       add       edx,step_src
 #if 1
@@ -3007,22 +3134,23 @@ static void cubic_interpolate_span(uint32 *dest,
       movq      mm6,mm3   // mm6 = x2
       psubw     mm5,mm3   // mm5 = x1-x2
       paddw     mm3,mm1   // mm3 = x0+x2
-      psubw     mm6,mm1   // mm6 = c
+      psubw     mm6,mm1   // mm6 = x2-x0 = c
       psubw     mm3,mm2   // mm3 = x0+x2-d/2
       pmullw    mm5,three // mm5 = 3*(x1-x2)
       psubw     mm3,mm2   // mm3 = x0+x2-d
-      pmulhw    mm6,mm7   // mm6 = c*t
+      pmulhw    mm6,mm7   // mm6 = c*t/2
       paddw     mm5,mm4   // mm5 = a
       psubw     mm3,mm5   // mm3 = b
 
-      psllw     mm5,2     // mm5 = a(15.1)
-      psllw     mm3,1     // mm3 = b
-      pmulhw    mm5,mm7   // mm5 = a*t
-      paddw     mm6,mm2   // mm6 = c*t+d
-      paddw     mm5,mm3   // mm5 = a*t + b
+      psllw     mm5,2     // mm5 = a*4
+      psllw     mm3,1     // mm3 = b*2
+      pmulhw    mm5,mm7   // mm5 = a*t*2
+      paddw     mm6,mm2   // mm6 = (c*t+d)/2
+      paddw     mm5,mm3   // mm5 = (a*t + b)*2
       pmulhw    mm5,mm7   // mm5 = a*t^2+b*t
-      pmulhw    mm5,mm7   // mm5 = a*t^3+b*t^2
+      pmulhw    mm5,mm7   // mm5 = (a*t^3+b*t^2)/2
       paddw     mm5,mm6
+      psraw     mm5,2
       packuswb  mm5,mm5
       movd      [edi],mm5
 #else
@@ -3738,7 +3866,7 @@ uint8 *LoadImageWithFreeImage(FIMEMORY *fi, int *x, int *y, int *n, int n_req)
 } 
 #endif
 
-static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* loaded_as_rgb, int *n, int n_req)
+static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* loaded_as_rgb, int *n, int n_req, char *filename)
 {
    uint8 *res = NULL;
    imv_failure_string = NULL;
@@ -3753,6 +3881,58 @@ static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* 
        return res;
    }
    imv_failure_string = stbi_failure_reason();
+
+   if ((mem[0] == 's' || mem[0] == 'x') && memcmp(mem+1, "PIC-delta-image", 16) == 0) {
+      char full_filename[1024];
+      int len2;
+      uint8 *mem2;
+      FILE *f;
+      stb_splitpath(full_filename, filename, STB_PATH);
+      strcat(full_filename, mem+17+4);
+      f = fopen(full_filename, "rb");
+      if (f && (len2 = stb_filelen(f), mem2 = malloc(len2)) != NULL) {
+         fread(mem2, 1, len2, f);
+         fclose(f); f = NULL;
+         res = stbi_load_from_memory(mem2, len2, x, y, n, n_req);
+         if (res) {
+            int i,offset,c;
+            *loaded_as_rgb = TRUE;
+            offset = 17;
+            offset += 4 + *(int *) (mem+offset);
+            if (  *x != *(int *) (mem+offset  )
+               || *y != *(int *) (mem+offset+4) )
+            {
+               free(res);
+               free(mem2);
+               return NULL;
+            }
+            offset += 8; // skip x,y
+            c = *(int *) (mem+offset);
+            assert(c >= 1 && c <= 4);
+            offset += 4;
+            while (offset < len) {
+               int start = *(int *) (mem+offset);
+               int count = *(int *) (mem+offset+4);
+               assert(start < *x* *y);
+               assert(count <= *x * *y - start);
+               if (start < 0 || start >= *x * *y)
+                  break;
+               if (start+count < start || start+count > *x * *y)
+                  break;
+               offset += 8;
+               for (i=0; i < count; ++i) {
+                  memcpy(res + start * n_req, mem+offset, c);
+                  ++start;
+                  offset += c;
+               }
+            }
+            free(mem2);
+            return res;
+         }
+         free(mem2);
+      }
+      if (f) fclose(f);
+   }
 
    if (only_stbi)
       return res;
@@ -3779,5 +3959,6 @@ static uint8 *imv_decode_from_memory(uint8 *mem, int len, int *x, int *y, Bool* 
       // we'll get the unknown-type message from stbi_failure_reason()
    }
 #endif
+
    return res;
 }
