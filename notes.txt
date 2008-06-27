@@ -1,4 +1,19 @@
+  Version 0.991: Beta 12
+    * bugfix: .spk file recursion issues, security
+
+  Version 0.99: Beta 11 ( 2008-02-07 )
+    * bugfix: further attempt to support BACK/FORWARD
+
+  Version 0.98: Beta 10 ( 2008-01-31 )
+    * bugfix: attempt to support BACK/FORWARD mouse buttons
+    * feature: custom .spk image-delta file format
+    * secret feature: recursive slideshows with clumsy UI using 'ctrl-R' and '.'
+
+  Version 0.97: Beta 9 ( 2007-11-27 )
+    * bugfix: if starting path is unicode don't blow up trying to read the directory
+
   Version 0.96: Beta 8 ( 2007-10-20 )
+    * feature: VC7 project files
     * feature: imv_light.exe - uses GDI+ only, not stb_image or FreeImage
     * feature: press 's' for a primitive slideshow of current directory
     * feature: HDR support in stb_image

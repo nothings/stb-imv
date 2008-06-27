@@ -13,14 +13,17 @@ rem # Make release directory
 
 mkdir ..\stb_imv
 copy vc6\release\stb_imv.exe ..\stb_imv\imv.exe
-copy "vc6\light release\stb_imv_light.exe" ..\stb_imv\imv_light.exe
+copy vc6\light_release\stb_imv_light.exe ..\stb_imv\imv_light.exe
 copy readme_binary.txt+notes.txt ..\stb_imv\readme.txt
 
 rem # Make tarball directory
 
 mkdir ..\stb_imv_src-%VERSION%
 mkdir ..\stb_imv_src-%VERSION%\vc6
+mkdir ..\stb_imv_src-%VERSION%\vc7
 copy vc6\stb_imv.ds? ..\stb_imv_src-%VERSION%\vc6
+copy vc7\stb_imv.sln ..\stb_imv_src-%VERSION%\vc7
+copy vc7\stb_imv.vcproj ..\stb_imv_src-%VERSION%\vc7
 copy *.* ..\stb_imv_src-%VERSION%
 
 rem #
@@ -40,6 +43,7 @@ del stb_imv_src-%VERSION%.zip
 zip -r stb_imv_src-%VERSION%.zip stb_imv_src-%VERSION%
 del /s /q stb_imv_src-%VERSION%\*
 rmdir stb_imv_src-%VERSION%\vc6
+rmdir stb_imv_src-%VERSION%\vc7
 rmdir stb_imv_src-%VERSION%
 
 rem # upload
