@@ -8,6 +8,14 @@ This is a beta version, targetting the eventual milestones:
 
 = Release Notes =
 
+  Version 1.0: Release 1
+    * feature: open a directory
+    * feature: sharpen when upscaling
+    * secret feature: toggle use of full-size virtual desktop
+
+  Version 0.991: Beta 12
+    * bugfix: .spk file recursion issues, security
+
   Version 0.99: Beta 11 ( 2008-02-07 )
     * bugfix: further attempt to support BACK/FORWARD
 
