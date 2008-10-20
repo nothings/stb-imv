@@ -53,6 +53,8 @@
 #define ALLOW_RECOLORING 1
 #endif
 
+//#define MONO2
+
 // implement USE_STBI
 
 #if USE_STBI
@@ -388,8 +390,12 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
 
          #if ALLOW_RECOLORING
          if (mono) {
+#ifdef MONO2
+            int p = image_data[k+2];
+#else
             int y = image_data[k+0]*5 + image_data[k+1]*9 + image_data[k+2]*2;
             int p = (int) stb_linear_remap(y, ymin, ymax, 0,255);
+#endif
             image_data[k+0] = p;
             image_data[k+1] = p;
             image_data[k+2] = p;
@@ -641,6 +647,7 @@ char helptext_left[] =
    " CTRL-B: toggle white stripe in border\n"
    "      L: toggle filename label\n"
    "      S: slideshow in current directory\n"
+   " CTRL-S: sharpen when upscaling\n"
 ;
 
 char helptext_right[] =
@@ -957,6 +964,8 @@ void GetAdjustedWindowRect(HWND win, RECT *rect)
    }
 }
 
+int allow_fullsize;
+
 // compute the size we'd prefer this window to be at for 1:1-ness
 void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
 {
@@ -967,7 +976,7 @@ void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
    int cx2 = GetSystemMetrics(SM_CXSCREEN);
    int cy2 = GetSystemMetrics(SM_CYSCREEN);
 
-   if (w <= cx2 && h <= cy2) {
+   if (allow_fullsize || (w <= cx2 && h <= cy2)) {
       // if the image fits on the primary monitor, go for it
       *w_ideal = w;
       *h_ideal = h;
@@ -1193,10 +1202,11 @@ void free_fileinfo(void)
 //     food.jpg
 
 // use upper, not lower, to get better sorting versus '_'
+// no, use lower not upper, to get sorting that matches explorer
 __forceinline char tupper(char b)
 {
-	//if (b >= 'A' && b <= 'Z') return b - 'A' + 'a';
-	if (b >= 'a' && b <= 'z') return b - 'a' + 'A';
+	if (b >= 'A' && b <= 'Z') return b - 'A' + 'a';
+	//if (b >= 'a' && b <= 'z') return b - 'a' + 'A';
 	return b;
 }
 
@@ -2004,7 +2014,7 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
 #else
          int channels;
          Bool loaded_as_rgb;
-         uint8 *data = imv_decode_from_memory(rom_images[n], 2000, &x, &y, &loaded_as_rgb, &channels, BPP);
+         uint8 *data = imv_decode_from_memory(rom_images[n], 2000, &x, &y, &loaded_as_rgb, &channels, BPP, "");
          assert(channels == BPP);
          pref_image = bmp_alloc(x, y);
          pref_image->pixels = data;
@@ -2169,9 +2179,11 @@ void performance_test(void)
 #define WM_APPCOMMAND                   0x0319
 #define APPCOMMAND_BROWSER_BACKWARD       1
 #define APPCOMMAND_BROWSER_FORWARD        2
+#define GET_APPCOMMAND_LPARAM(lParam) ((short)(HIWORD(lParam) & ~FAPPCOMMAND_MASK))
+#endif
+#ifndef APPCOMMAND_OPEN
 #define APPCOMMAND_OPEN                   30
 #define FAPPCOMMAND_MASK  0xF000
-#define GET_APPCOMMAND_LPARAM(lParam) ((short)(HIWORD(lParam) & ~FAPPCOMMAND_MASK))
 #endif
 
 // ok, surely windows doesn't BY DESIGN require you to store your
@@ -2179,6 +2191,7 @@ void performance_test(void)
 // or some such to tell you what instance a thread came from. But the
 // HINSTANCE is needed to launch the preferences dialog. Oh well!
 HINSTANCE inst;
+int sharpen=0;
 
 int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -2503,11 +2516,26 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                resize(-1);
                break;
 
+            case 'S' | MY_CTRL:
+               sharpen = !sharpen;
+               --cur->y;
+               --cur->x;
+               size_to_current(0);
+               break;
+
             case 'O':
             case MY_CTRL | 'O':
                open_file();
                break;
 
+            case MY_CTRL | 'F':
+               allow_fullsize = !allow_fullsize;
+               if (allow_fullsize)
+                  display_mode = DISPLAY_current;
+               else
+                  display_mode = !display_mode;
+               toggle_display();
+               break;
             case MY_ALT | '\r':
                toggle_display();
                break;
@@ -3052,7 +3080,7 @@ typedef uint32 Color;
 
 // lerp() is just blend() that also "blends" alpha
 // put a/256 of src over dest, including alpha
-// again, cannot be used for a=256
+;// again, cannot be used for a=256
 static Color lerp(Color dest, Color src, uint8 a)
 {
    int rb_src  = src  & 0xff00ff;
@@ -3413,6 +3441,36 @@ Image *downsample_two_thirds(Image *src)
    return res;
 }
 
+void do_sharpen(uint8 *data, int stride, int x, int y)
+{
+   int i,j,k;
+   uint8 prev[3200*4];
+   if (x > 3200) return;
+   memcpy(prev, data, x*BPP);
+   for (j=1; j < y-1; ++j) {
+      uint8 *next = data + stride*(j+1);
+      unsigned char left[4];
+      memcpy(left, data+stride*j+BPP, BPP);
+      for (i=1; i < x-1; ++i) {
+         unsigned char temp[4];
+         memcpy(temp, data+stride*j+i*BPP,BPP);
+         for (k=0; k < BPP; ++k) {
+            int v = data[stride*j+i*BPP+k] * 16;
+            v -= (prev[i*BPP+k-4] + prev[i*BPP+k] + prev[i*BPP+k+4]);
+            v -= (next[i*BPP+k-4] + next[i*BPP+k] + next[i*BPP+k+4]);
+            v -= (left[k] + data[stride*j+i*BPP+4+k]);
+            v >>= 3;
+            if (v < 0) v = 0; else if (v > 255) v = 255;
+            data[stride*j+i*BPP+k] = v;
+         }
+         // now temp becomes the new left
+         // but first:
+         memcpy(prev+(i-1)*BPP, left, BPP);
+         memcpy(left, temp, BPP);
+      }
+   }
+}
+
 Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
 {
    Image *to_free, *res;
@@ -3423,6 +3481,9 @@ Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
    if (gx > src->x || gy > src->y)  {
       upsample = TRUE;
    } else {
+      // current biggest problem perf-wise is on scaling down, we don't
+      // use threads
+
       // maybe should do something smarter here, like find the
       // nearest box size, instead of repetitive powers of two
       while (gx <= (src->x >> 1) && gy <= (src->y >> 1)) {
@@ -3465,6 +3526,8 @@ Image *grScaleBitmap(Image *src, int gx, int gy, Image *dest)
       imfree(to_free);
       #endif
    }
+   if (upsample && sharpen)
+      do_sharpen(res->pixels, res->stride, res->x, res->y);
    return res;
 }
 #endif // BPP==4
