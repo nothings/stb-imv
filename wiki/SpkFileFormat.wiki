@@ -65,7 +65,7 @@ the version number VERSION must be 0.
 
 the NAME field contains the name of an image file stored in the same
 directory as the SPK file. the name must not contain the character '/'
-the character ':', or the character '\', since these are filename
+the character ':', or the character \, since these are filename
 separators. a decoder MUST reject SPK files using these characters, to
 avoid security issues.
 
