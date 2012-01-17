@@ -193,6 +193,11 @@ SOURCE=..\imv.ico
 # End Source File
 # Begin Source File
 
+SOURCE=..\misc.c
+# PROP Exclude_From_Build 1
+# End Source File
+# Begin Source File
+
 SOURCE=..\notes.txt
 
 !IF  "$(CFG)" == "stb_imv - Win32 Release"

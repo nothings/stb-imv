@@ -50,7 +50,7 @@
 #endif
 
 #ifndef ALLOW_RECOLORING
-#define ALLOW_RECOLORING 1
+#define ALLOW_RECOLORING 0
 #endif
 
 //#define MONO2
@@ -82,6 +82,7 @@ typedef int Bool;
 
 Bool do_show;
 float delay_time = 4;
+int nearest_neighbor = 0; // internal use
 
 // all programs get the version number from the same place: version.bat
 #define set   static char *
@@ -355,6 +356,9 @@ int mono;
 #endif
 void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL image_loaded_as_rgb, int image_n)
 {
+   #ifdef ALLOW_RECOLORING
+   int ms,md, ns,nd;
+   #endif
    int i,j,k,ymin=0,ymax=256*8-1;
    z->pixels = image_data;
    z->x = image_x;
@@ -362,6 +366,18 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
    z->stride = image_x*BPP;
    z->frame = 0;
    z->had_alpha = (image_n==4);
+
+   if (z->had_alpha) {
+      int n=0;
+      for (n=0; n < image_x * image_y; ++n)
+         if (image_data[n*4+3])
+            break;
+      if (n == image_x * image_y) {
+         // all alpha is 0, so force to 255
+         for (n=0; n < image_x * image_y; ++n)
+            image_data[n*4+3] = 255;
+      }
+   }
 
    #if ALLOW_RECOLORING
    if (mono) {
@@ -375,6 +391,23 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
          }
       }
    }
+   #endif
+
+   #if ALLOW_RECOLORING
+   if (lmin > 0)
+      ms = (int) (lmin * 255), md=0;
+   else
+      ms = 0, md = (int)(-lmin*255);
+   if (lmax < 1)
+      ns = (int)(lmax * 255), nd=255;
+   else
+      ns = 255, nd = (int) ((2-lmax)*255);
+   if (ns <= ms)
+      ns = ms+1;
+   if (nd < md)
+      nd = md+1;
+   if (ns == 256) --ns,--ms;
+   if (nd == 256) --nd,--md;
    #endif
 
    k=0;
@@ -399,10 +432,10 @@ void make_image(Image *z, int image_x, int image_y, uint8 *image_data, BOOL imag
             image_data[k+0] = p;
             image_data[k+1] = p;
             image_data[k+2] = p;
-         } else if (lmin > 0 || lmax < 1) {
+         } else if (lmin != 0 || lmax != 1) {
             int c;
             for (c=0; c < 3; ++c) {
-               int z = (int) stb_linear_remap(image_data[k+c], lmin*255,lmax*255, 0,255);
+               int z = (int) stb_linear_remap(image_data[k+c], ms,ns, md,nd);
                image_data[k+c] = stb_clamp(z, 0, 255);
             }
          }
@@ -967,14 +1000,11 @@ void GetAdjustedWindowRect(HWND win, RECT *rect)
 int allow_fullsize;
 
 // compute the size we'd prefer this window to be at for 1:1-ness
-void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
+void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y, int cx2, int cy2)
 {
    // @TODO: this probably isn't right if the virtual TL isn't (0,0)???
    int cx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
    int cy = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-
-   int cx2 = GetSystemMetrics(SM_CXSCREEN);
-   int cy2 = GetSystemMetrics(SM_CYSCREEN);
 
    if (allow_fullsize || (w <= cx2 && h <= cy2)) {
       // if the image fits on the primary monitor, go for it
@@ -991,6 +1021,7 @@ void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
       compute_size(cx+FRAME*2 ,cy+FRAME*2,w,h,&w1,&h1);
       compute_size(cx2+FRAME*2,cy2+FRAME*2,w,h,&w2,&h2);
       // require it be "significantly more" on the virtual
+      #ifdef ALLOW_MULTISCREEN
       if (h1 > h2*1.25 || w1 > w2*1.25) {
          *w_ideal = stb_min(cx,w1)+FRAME*2;
          *h_ideal = stb_min(cy,h1)+FRAME*2;
@@ -998,6 +1029,10 @@ void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
          *w_ideal = stb_min(cx2,w2)+FRAME*2;
          *h_ideal = stb_min(cy2,h2)+FRAME*2;
       }
+      #else
+      *w_ideal = stb_min(cx2,w2)+FRAME*2;
+      *h_ideal = stb_min(cy2,h2)+FRAME*2;
+      #endif
       // compute actual size image will be if fit to this window
       compute_size(*w_ideal, *h_ideal, w,h, &w,&h);
       // and add the padding in
@@ -1006,6 +1041,7 @@ void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
    }
 
    // now find center point...
+   #ifdef ALLOW_MULTISCREEN
    if ((cx != cx2 || cy != cy2) && w <= cx2+FRAME*2 && h <= cy2+FRAME*2) {
       // if it fits on the primary, center it on the primary
       *x = (cx2 - w) >> 1;
@@ -1015,6 +1051,10 @@ void ideal_window_size(int w, int h, int *w_ideal, int *h_ideal, int *x, int *y)
       *x = (cx - w) >> 1;
       *y = (cy - h) >> 1;
    }
+   #else
+   *x = (cx2 - w) >> 1;
+   *y = (cy2 - h) >> 1;
+   #endif
 }
 
 
@@ -1035,23 +1075,26 @@ int display_mode;
 void size_to_current(int maximize)
 {
    int w2,h2;
-   int w,h,x,y;
+   int w,h,x,y,cx,cy;
+
+   // get the monitor it's on
+   HMONITOR mon = MonitorFromWindow(win, MONITOR_DEFAULTTONEAREST);
+   MONITORINFO minfo = { sizeof(minfo) };
+   GetMonitorInfo(mon, &minfo);
 
    // the 1:1 actual size WITH frame
    w2 = source->x+FRAME*2;
    h2 = source->y+FRAME*2;
 
+   cx = minfo.rcMonitor.right - minfo.rcMonitor.left;
+   cy = minfo.rcMonitor.bottom - minfo.rcMonitor.top;
+
    switch (display_mode) {
       case DISPLAY_actual: {
-         int cx,cy;
          RECT rect;
          // given the actual size, compute the ideal window size
          // (which is either 1:1 or fullscreen) and center point
-         ideal_window_size(w2,h2, &w,&h, &x,&y);
-
-         // get the desktop size
-         cx = GetSystemMetrics(SM_CXSCREEN);
-         cy = GetSystemMetrics(SM_CYSCREEN);
+         ideal_window_size(w2,h2, &w,&h, &x,&y, cx,cy);
 
          // if the window fits on the desktop
          if (w <= cx && h <= cy) {
@@ -1059,8 +1102,11 @@ void size_to_current(int maximize)
             GetAdjustedWindowRect(win, &rect);
             x = (rect.right + rect.left - w) >> 1;
             y = (rect.top + rect.bottom - h) >> 1;
-            x = stb_clamp(x,0,cx-w);
-            y = stb_clamp(y,0,cy-h);
+            x = stb_clamp(x,minfo.rcMonitor.left,minfo.rcMonitor.right-w);
+            y = stb_clamp(y,minfo.rcMonitor.top,minfo.rcMonitor.bottom-h);
+         } else {
+            x += minfo.rcMonitor.left;
+            y += minfo.rcMonitor.top;
          }
          break;
       }
@@ -1069,8 +1115,11 @@ void size_to_current(int maximize)
          if (maximize) {
             // fullscreen, plus the frame around the edge
             x = y = -FRAME;
-            w = GetSystemMetrics(SM_CXSCREEN) + FRAME*2;
-            h = GetSystemMetrics(SM_CYSCREEN) + FRAME*2;
+            w = cx + FRAME*2;
+            h = cy + FRAME*2;
+
+            x += minfo.rcMonitor.left;
+            y += minfo.rcMonitor.top;
          } else {
             // just use the current window
             RECT rect;
@@ -2078,7 +2127,7 @@ BOOL CALLBACK PrefDlgProc(HWND hdlg, UINT imsg, WPARAM wparam, LPARAM lparam)
                unsigned char curc[6];
                int new_border;
                int old_cubic = upsample_cubic;
-               memcpy(cur, alpha_background, 6);
+               memcpy(curc, alpha_background, 6);
 
                // load the settings back out of the dialog box
                for (i=0; i < 6; ++i)
@@ -2192,9 +2241,12 @@ void performance_test(void)
 // HINSTANCE is needed to launch the preferences dialog. Oh well!
 HINSTANCE inst;
 int sharpen=0;
+int dummy_window=1;
 
 int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+   if (dummy_window) return DefWindowProc (hWnd, uMsg, wParam, lParam);
+
    switch (uMsg) {
       case WM_CREATE: {
          win = hWnd;
@@ -2364,10 +2416,11 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             }
 
             #if ALLOW_RECOLORING
-            case '[': lmax = stb_clamp(lmax-1.0f/32, 0,1); clear_cache(0); advance(0); break;
-            case ']': lmax = stb_clamp(lmax+1.0f/32, 0,1); clear_cache(0); advance(0); break;
-            case '{': lmin = stb_clamp(lmin-1.0f/32, 0,1); clear_cache(0); advance(0); break;
-            case '}': lmin = stb_clamp(lmin+1.0f/32, 0,1); clear_cache(0); advance(0); break;
+            case ']': lmax = stb_clamp(lmax-1.0f/32, 0,2); clear_cache(0); advance(0); break;
+            case '[': lmax = stb_clamp(lmax+1.0f/32, 0,2); clear_cache(0); advance(0); break;
+            case '}': lmin = stb_clamp(lmin-1.0f/32, -1,1); clear_cache(0); advance(0); break;
+            case '{': lmin = stb_clamp(lmin+1.0f/32, -1,1); clear_cache(0); advance(0); break;
+            case 'Z': lmin = 0; lmax = 1.0; clear_cache(0); advance(0); break;
             case 'm': mono = !mono; clear_cache(0); advance(0); break;
             #endif
 
@@ -2774,9 +2827,36 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
       int x,y;
       int w2 = source->x+FRAME*2, h2 = source->y+FRAME*2;
       int w,h;
+      int cx,cy;
+      HMONITOR mon;
+      MONITORINFO minfo = { sizeof(minfo) };
+
+      // we have to create a window first to find out the correct monitor
+      // because i can't find any other way to discover this
+      hWnd = CreateWindow(szAppName, displayName,
+                        WS_OVERLAPPEDWINDOW,
+                        CW_USEDEFAULT,CW_USEDEFAULT,1,1,
+                        //x,y, w, h,
+                        NULL, NULL, hInstance, NULL);
+
+      if (!hWnd)
+         return FALSE;
+
+      // get the monitor it's on
+
+      mon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+      GetMonitorInfo(mon, &minfo);
+
+      DestroyWindow(hWnd);
+
+      cx = minfo.rcMonitor.right - minfo.rcMonitor.left;
+      cy = minfo.rcMonitor.bottom - minfo.rcMonitor.top;
+
+      //cx = GetSystemMetrics(SM_CXSCREEN);
+      //cy = GetSystemMetrics(SM_CYSCREEN);
 
       // determine an initial window size, and resize 
-      ideal_window_size(w2,h2, &w,&h, &x,&y);
+      ideal_window_size(w2,h2, &w,&h, &x,&y, cx,cy);
 
       // if the size exactly matches, don't resize, just copy
       if (w == source->x+FRAME*2 && h == source->y+FRAME*2) {
@@ -2808,14 +2888,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
          h -= FRAME*2;
       }
 
-      // create the window
+      x += minfo.rcMonitor.left;
+      y += minfo.rcMonitor.top;
+
+      // now create the real window
+      dummy_window = 0;
       hWnd = CreateWindow(szAppName, displayName,
                         WS_POPUP,
                         x,y, w, h,
                         NULL, NULL, hInstance, NULL);
-
-      if (!hWnd)
-         return FALSE;
    } // open brace for defining some temporary variables
 
    // display the window
@@ -2947,6 +3028,7 @@ void *image_resize_work(ImageProcess *q)
          y = q->dy * j;
          iy = (int) floor(y);
          fy = (int) floor(255.9f*(y - iy));
+         if (nearest_neighbor) fy = 0; else
          if (iy >= src->y-1) {
             iy = src->y-2;
             fy = 255;
@@ -2963,6 +3045,7 @@ void *image_resize_work(ImageProcess *q)
 
                   #if BPP == 4
                   uint32 c00,c01,c10,c11,rb0,rb1,rb00,rb01,rb10,rb11,rb,g;
+                  if (nearest_neighbor) x = 0;
                   c00 = *(uint32 *) s0;
                   c01 = *(uint32 *) (s0+4);
                   c10 = *(uint32 *) s1;
@@ -2989,6 +3072,7 @@ void *image_resize_work(ImageProcess *q)
                   unsigned char v00,v01,v10,v11;
                   int v0,v1;
 
+                  if (nearest_neighbor) x = 0;
                   v00 = s0[0]; v01 = s0[BPP+0]; v10 = s1[0]; v11 = s1[BPP+0];
                   v0 = (v00<<8) + x * (v01 - v00);
                   v1 = (v10<<8) + x * (v11 - v10);
