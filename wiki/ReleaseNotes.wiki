@@ -12,13 +12,10 @@
     * feature: full-size expands on whichever monitor image is current on
     * change: don't stretch full-size image across multiple monitors (#define ALLOW_MULTISCREEN for old behavior)
 
-  Version 1.0: Release 1
+  Version 1.0: Release 1 ( 2008-10-19 )
     * feature: open a directory
     * feature: sharpen when upscaling
     * secret feature: toggle use of full-size virtual desktop
-
-  Version 0.991: Beta 12
-    * bugfix: .spk file recursion issues, security
 
   Version 0.99: Beta 11 ( 2008-02-07 )
     * bugfix: further attempt to support BACK/FORWARD
