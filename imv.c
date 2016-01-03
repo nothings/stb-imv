@@ -1476,6 +1476,8 @@ void flush_cache(int locked)
 int wrap(int z)
 {
    int n = stb_arr_len(fileinfo);
+	if ( z == INT_MIN ) return 0;
+	if ( z == INT_MAX ) return n - 1;
    if (z < 0) return z + n;
    while (z >= n) z = z - n;
    return z;
@@ -1568,7 +1570,14 @@ void advance(int dir)
    if (fileinfo == NULL)
       init_filelist();
 
-   cur_loc = wrap(cur_loc + dir);
+	if ( dir == INT_MIN || dir == INT_MAX )
+	{
+		cur_loc = wrap(dir);
+	}
+	else
+	{
+		cur_loc = wrap(cur_loc + dir);
+	}
 
    // set adjacent files to previous lru value, so they're 2nd-highest priority
    fileinfo[wrap(cur_loc-1)].lru = lru_stamp;
@@ -1585,7 +1594,8 @@ void advance(int dir)
    {
       dc.num_files = 0;
       queue_disk_command(&dc, cur_loc, 1);           // first thing to load: this file
-      if (dir) {
+		const bool shouldPrecache = dir && dir != INT_MIN && dir != INT_MAX;
+      if (shouldPrecache) {
          queue_disk_command(&dc, wrap(cur_loc+dir), 0); // second thing to load: the next file (preload)
          queue_disk_command(&dc, wrap(cur_loc-dir), 0); // last thing to load: the previous file (in case it got skipped when they went fast)
       }
@@ -2445,6 +2455,13 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             case VK_NUMPAD4:
                advance(-1);
                break;
+
+				case VK_HOME:
+					advance(INT_MIN);
+					break;
+				case VK_END:
+					advance(INT_MAX);
+					break;
 
             case VK_F1:
             case 'H':
