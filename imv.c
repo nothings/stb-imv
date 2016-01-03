@@ -2449,10 +2449,12 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
          switch (code) {
             case VK_RIGHT:
             case VK_NUMPAD6:
+				case VK_NEXT:
                advance(1);
                break;
             case VK_LEFT:
             case VK_NUMPAD4:
+				case VK_PRIOR:
                advance(-1);
                break;
 
@@ -2589,10 +2591,12 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                DialogBox(inst, MAKEINTRESOURCE(IDD_pref), hWnd, PrefDlgProc);
                break;
 
+				case VK_ADD:
             case MY_CTRL | VK_OEM_PLUS:
             case MY_CTRL | MY_SHIFT | VK_OEM_PLUS:
                resize(1);
                break;
+				case VK_SUBTRACT:
             case MY_CTRL | VK_OEM_MINUS:
                resize(-1);
                break;
@@ -2617,6 +2621,7 @@ int WINAPI MainWndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
                   display_mode = !display_mode;
                toggle_display();
                break;
+				case VK_MULTIPLY:
             case MY_ALT | '\r':
                toggle_display();
                break;
